@@ -1,0 +1,3 @@
+1. V post massege metodi bi blo fajn da se lahk preverja tudi ime userja
+torej bi rabil v PostMessageRequest tudi UserName ali pa mogoce bi rabu
+drugace generirat Id-je sam to potem zelo zakomplicira kodo lahko oziroma mogoce slovar??
