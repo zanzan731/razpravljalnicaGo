@@ -31,13 +31,16 @@ type messageBoardServer struct {
 	users    map[int64]*pb.User
 	topics   map[int64]*pb.Topic
 	messages map[int64][]*pb.Message
+
+	subscribers map[int64][]pb.MessageBoard_SubscribeTopicServer // topicID → streams
 }
 
 func newServer() *messageBoardServer {
 	return &messageBoardServer{
-		users:    make(map[int64]*pb.User),
-		topics:   make(map[int64]*pb.Topic),
-		messages: make(map[int64][]*pb.Message),
+		users:       make(map[int64]*pb.User),
+		topics:      make(map[int64]*pb.Topic),
+		messages:    make(map[int64][]*pb.Message),
+		subscribers: make(map[int64][]pb.MessageBoard_SubscribeTopicServer),
 	}
 }
 
@@ -94,6 +97,17 @@ func (s *messageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessag
 	}
 	//lahk tud GetTopicId mogoce ne vem zakaj je ta Getter tudi dan najbrz je nek razlog
 	s.messages[req.TopicId] = append(s.messages[req.TopicId], message)
+
+	//obvesti narocnike o novi objavi
+	event := &pb.MessageEvent{
+		SequenceNumber: message.Id,
+		Op:             pb.OpType_OP_POST,
+		Message:        message,
+		EventAt:        timestamppb.Now(),
+	}
+	for _, sub := range s.subscribers[req.TopicId] {
+		sub.Send(event)
+	}
 	return message, nil
 }
 
@@ -125,7 +139,7 @@ func (s *messageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMe
 }
 
 // rpc LikeMessage(LikeMessageRequest) returns (Message);
-func (s *messageBoardServer) LikeMessageRequest(ctx context.Context, req *pb.LikeMessageRequest) (*pb.Message, error) {
+func (s *messageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessageRequest) (*pb.Message, error) {
 	messages, ok := s.messages[req.TopicId]
 	if !ok {
 		return nil, fmt.Errorf("topic does not exist")
@@ -142,7 +156,14 @@ func (s *messageBoardServer) LikeMessageRequest(ctx context.Context, req *pb.Lik
 // ///////////////////////////
 // rpc GetSubcscriptionNode(SubscriptionNodeRequest) returns (SubscriptionNodeResponse);
 func (s *messageBoardServer) GetSubcscriptionNode(ctx context.Context, req *pb.SubscriptionNodeRequest) (*pb.SubscriptionNodeResponse, error) {
-	return nil, nil
+	//za implementirat vec ko bo vec nodov
+	return &pb.SubscriptionNodeResponse{
+		SubscribeToken: "OK",
+		Node: &pb.NodeInfo{
+			NodeId:  "main",
+			Address: "localhost:50051",
+		},
+	}, nil
 }
 
 // rpc ListTopics(google.protobuf.Empty) returns (ListTopicsResponse);
@@ -164,6 +185,12 @@ func (s *messageBoardServer) GetMessages(ctx context.Context, req *pb.GetMessage
 
 // rpc SubscribeTopic(SubscribeTopicRequest) returns (stream MessageEvent);
 func (s *messageBoardServer) SubscribeTopic(req *pb.SubscribeTopicRequest, stream pb.MessageBoard_SubscribeTopicServer) error {
+	for _, topicID := range req.TopicId {
+		s.subscribers[topicID] = append(s.subscribers[topicID], stream)
+	}
+
+	// držimo stream odprt dokler se uporabnik ne odklopi
+	<-stream.Context().Done()
 	return nil
 }
 
@@ -180,4 +207,4 @@ func main() {
 	grpcServer.Serve(lis)
 }
 
-//za implementirat se SubscribeTopic in GetSubscriptionNode ko ugotovim kaj s tem ce zares
+//za popravit GetSubcscriptionNode
