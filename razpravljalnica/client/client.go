@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -89,6 +90,10 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 				fmt.Println("Error", err)
 				continue
 			}
+			if len(resp.Topics) == 0 {
+				fmt.Println("There are no open topics yet!")
+				continue
+			}
 			for _, t := range resp.Topics {
 				fmt.Printf("[%d] %s\n", t.Id, t.Name)
 			}
@@ -111,9 +116,15 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 		///TODO implementiraj pole ka je stream
 		case "sub":
 			if len(args) < 2 {
-				fmt.Println("Usage: sub <sub-id>")
+				fmt.Println("Usage: sub <topic-id>")
 			}
-			continue
+			topicID := toInt64(args[1])
+			if topicID <= 0 {
+				fmt.Printf("TopicID must be a number bigger than 0.\nUsage: sub <topic-id>")
+				continue
+			}
+			fmt.Println("Subscribing to topic", topicID, "…")
+			go subscribeLoop(c, topicID)
 		case "send":
 			if len(args) < 3 {
 				fmt.Println("Usage: send <topic-id> <message>")
@@ -165,7 +176,28 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 		}
 	}
 }
+func subscribeLoop(c pb.MessageBoardClient, topicID int64) {
+	stream, err := c.SubscribeTopic(context.Background(), &pb.SubscribeTopicRequest{TopicId: []int64{topicID}})
+	if err != nil {
+		fmt.Println("Subscribe failed:", err)
+		return
+	}
 
+	for {
+		//Recv() sprejme naslednji response from server
+		event, err := stream.Recv()
+		//EOF se poslje na koncu ko se streem terminata
+		if err == io.EOF {
+			fmt.Println("Stream closed for topic", topicID)
+			return
+		}
+		if err != nil {
+			fmt.Println("Stream error:", err)
+			return
+		}
+		fmt.Printf("\n NEW MESSAGE IN TOPIC %d: %s\n>>> ", topicID, event.Message.Text)
+	}
+}
 func toInt64(s string) int64 {
 	var x int64
 	fmt.Sscan(s, &x)
