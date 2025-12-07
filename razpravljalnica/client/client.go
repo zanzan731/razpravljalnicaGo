@@ -113,7 +113,7 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 				continue
 			}
 			fmt.Printf("Created topic: [%d] %s\n", topic.Id, topic.Name)
-		///TODO implementiraj pole ka je stream
+		//Subscribe to topic
 		case "sub":
 			if len(args) < 2 {
 				fmt.Println("Usage: sub <topic-id>")
