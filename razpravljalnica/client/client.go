@@ -56,6 +56,8 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 	fmt.Println("   sub ID             - subscribe to topic")
 	fmt.Println("   send ID MESSAGE    - send message")
 	fmt.Println("   msgs ID            - list messages in topic")
+	fmt.Println("   del TOPICID MSGID  - delete your message")
+	fmt.Println("   like TOPICID MSGID - like message")
 	fmt.Println("   help               - show commands")
 	fmt.Println("   exit               - quit")
 	fmt.Println("--------------------------------------------------")
@@ -154,8 +156,39 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 			}
 			fmt.Println("All messages for topic ", topicID, ":")
 			for _, message := range messages.Messages {
-				fmt.Printf("[%d]: %s\n", message.UserId, message.Text)
+				fmt.Printf("[%d, %d]: %s      Likes: %d\n", message.Id, message.UserId, message.Text, message.Likes)
 			}
+		case "del":
+			if len(args) != 3 {
+				fmt.Println("Usage: del <topic-id> <msg-id>")
+			}
+			topicID := toInt64(args[1])
+			msgID := toInt64(args[2])
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_, err := c.DeleteMessage(ctx, &pb.DeleteMessageRequest{MessageId: msgID, UserId: userID, TopicId: topicID})
+			cancel()
+			if err != nil {
+				fmt.Println("Error: ", err)
+				continue
+			}
+			fmt.Printf("Message %d succesfully deleted from topic %d\n", msgID, topicID)
+		case "like":
+			if len(args) != 3 {
+				fmt.Println("Usage: like <topic-id> <msg-id>")
+			}
+			topicID := toInt64(args[1])
+			msgID := toInt64(args[2])
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			message, err := c.LikeMessage(ctx, &pb.LikeMessageRequest{MessageId: msgID, UserId: userID, TopicId: topicID})
+			cancel()
+			if err != nil {
+				fmt.Println("Error: ", err)
+				continue
+			}
+			fmt.Printf("You liked msg: %d\n", message.Id)
+
 		case "help":
 			fmt.Println("")
 			fmt.Println("Commands:")
@@ -164,6 +197,8 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 			fmt.Println("   sub ID             - subscribe to topic")
 			fmt.Println("   send ID MESSAGE    - send message")
 			fmt.Println("   msgs ID            - list messages in topic")
+			fmt.Println("   del TOPICID MSGID  - delete your message")
+			fmt.Println("   like TOPICID MSGID - like message")
 			fmt.Println("   help               - show commands")
 			fmt.Println("   exit               - quit")
 			fmt.Println("--------------------------------------------------")
@@ -203,3 +238,5 @@ func toInt64(s string) int64 {
 	fmt.Sscan(s, &x)
 	return x
 }
+
+//TODO like msg, da ne mores veckrat istega likat

@@ -171,6 +171,9 @@ func (s *messageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessag
 	}
 	for _, msg := range messages {
 		if msg.Id == req.MessageId {
+			if msg.UserId == req.UserId {
+				return nil, fmt.Errorf("you can't like your own message")
+			}
 			msg.Likes++
 			return msg, nil
 		}
