@@ -51,16 +51,17 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("")
 	fmt.Println("Commands:")
-	fmt.Println("   topics             - list topics")
-	fmt.Println("   newtopic NAME      - create topic")
-	fmt.Println("   sub ID             - subscribe to topic")
-	fmt.Println("   send ID MESSAGE    - send message")
-	fmt.Println("   msgs ID            - list messages in topic")
-	fmt.Println("   del TOPICID MSGID  - delete your message")
-	fmt.Println("   like TOPICID MSGID - like message")
-	fmt.Println("   help               - show commands")
-	fmt.Println("   exit               - quit")
-	fmt.Println("--------------------------------------------------")
+	fmt.Println("   topics                          - list topics")
+	fmt.Println("   newtopic NAME                   - create topic")
+	fmt.Println("   sub ID                          - subscribe to topic")
+	fmt.Println("   send ID MESSAGE                 - send message")
+	fmt.Println("   update TOPICID MSGID MESSAGE    - update message")
+	fmt.Println("   msgs ID                         - list messages in topic")
+	fmt.Println("   del TOPICID MSGID               - delete your message")
+	fmt.Println("   like TOPICID MSGID              - like message")
+	fmt.Println("   help                            - show commands")
+	fmt.Println("   exit                            - quit")
+	fmt.Println("-------------------------------------------------------------")
 	//endless loop dokler ne rece da ce vn je prjavljen ist ku for true ocitn SonarQube reku da se tko pise v goju
 	for {
 		//nrdi lep user interface da zgleda ku neki kar bi se dal uporabljat
@@ -141,7 +142,23 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 				continue
 			}
 			fmt.Printf("Posted message on topic %d: %s\n", message.TopicId, message.Text)
-		//uni GetMessages, vrne vse message znotraj toppica
+		case "update":
+			if len(args) < 4 {
+				fmt.Println("Usage: update <topic-id> <msg-id> <message>")
+			}
+			topicID := toInt64(args[1])
+			msgID := toInt64(args[2])
+			textMessage := strings.Join(args[3:], " ")
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			message, err := c.UpdateMessage(ctx, &pb.UpdateMessageRequest{TopicId: topicID, MessageId: msgID, UserId: userID, Text: textMessage})
+			cancel()
+			if err != nil {
+				fmt.Println("Error: ", err)
+				continue
+			}
+			fmt.Printf("Updated message %d on topic %d: %s\n", message.Id, message.TopicId, message.Text)
+
+			//uni GetMessages, vrne vse message znotraj toppica
 		case "msgs":
 			if len(args) != 2 {
 				fmt.Println("Usage: msgs <topic-id>")
@@ -192,16 +209,17 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 		case "help":
 			fmt.Println("")
 			fmt.Println("Commands:")
-			fmt.Println("   topics             - list topics")
-			fmt.Println("   newtopic NAME      - create topic")
-			fmt.Println("   sub ID             - subscribe to topic")
-			fmt.Println("   send ID MESSAGE    - send message")
-			fmt.Println("   msgs ID            - list messages in topic")
-			fmt.Println("   del TOPICID MSGID  - delete your message")
-			fmt.Println("   like TOPICID MSGID - like message")
-			fmt.Println("   help               - show commands")
-			fmt.Println("   exit               - quit")
-			fmt.Println("--------------------------------------------------")
+			fmt.Println("   topics                          - list topics")
+			fmt.Println("   newtopic NAME                   - create topic")
+			fmt.Println("   sub ID                          - subscribe to topic")
+			fmt.Println("   send ID MESSAGE                 - send message")
+			fmt.Println("   update TOPICID MSGID MESSAGE    - update message")
+			fmt.Println("   msgs ID                         - list messages in topic")
+			fmt.Println("   del TOPICID MSGID               - delete your message")
+			fmt.Println("   like TOPICID MSGID              - like message")
+			fmt.Println("   help                            - show commands")
+			fmt.Println("   exit                            - quit")
+			fmt.Println("-------------------------------------------------------------")
 		case "exit":
 			fmt.Println("Good bye!")
 			return
@@ -238,5 +256,3 @@ func toInt64(s string) int64 {
 	fmt.Sscan(s, &x)
 	return x
 }
-
-//TODO like msg, da ne mores veckrat istega likat

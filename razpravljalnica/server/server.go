@@ -130,6 +130,40 @@ func (s *messageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessag
 	return message, nil
 }
 
+// rpc UpdateMessage(UpdateMessageRequest) returns (Message);
+func (s *messageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMessageRequest) (*pb.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	messages, ok := s.messages[req.TopicId]
+
+	if !ok {
+		return nil, fmt.Errorf("topic does not exist")
+	}
+
+	for i, msg := range messages {
+		if msg.Id == req.MessageId {
+			// ce user ni owner
+			if msg.UserId != req.UserId {
+				return nil, fmt.Errorf("user is not the owner of this message")
+			}
+			message := &pb.Message{
+				Id:        msg.Id,
+				TopicId:   msg.TopicId,
+				UserId:    msg.UserId,
+				Text:      req.Text,
+				CreatedAt: timestamppb.Now(), //to nastavi time na trenutn cajt na serverju type of *timestamppb.Timestamp
+				Likes:     msg.Likes,         //zcni z 0
+			}
+			s.messages[req.TopicId][i] = message
+			return message, nil
+		}
+	}
+
+	// message ne obstaja
+	return nil, fmt.Errorf("message with this id does not exist")
+}
+
 //  rpc DeleteMessage(DeleteMessageRequest) returns (google.protobuf.Empty);
 
 func (s *messageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMessageRequest) (*emptypb.Empty, error) {
@@ -150,6 +184,7 @@ func (s *messageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMe
 			if msg.UserId != req.UserId {
 				return nil, fmt.Errorf("user is not the owner of this message")
 			}
+
 			// zbrisi message do ija brez ija in od ija naprej zdruzi da nimam praznih vmes pole
 			s.messages[req.TopicId] = append(messages[:i], messages[i+1:]...)
 			return &emptypb.Empty{}, nil
@@ -262,5 +297,3 @@ func main() {
 	log.Println("Server running on port 50051...")
 	grpcServer.Serve(lis)
 }
-
-//za popravit GetSubcscriptionNode
