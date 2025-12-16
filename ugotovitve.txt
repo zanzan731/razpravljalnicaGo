@@ -2,6 +2,13 @@ to je proto command ce bos se kdaj rabu:
 protoc -I="." -I="C:\Users\ANEDCD~1\go\pkg\mod\github.com\protocolbuffers\protobuf@v6.31.1+incompatible\src" --go_out=. --go-grpc_out=. razpravljalnica.proto
 To generira dve datoteki razpravljalnica.pb.go(kolkor zastopim so tle not vse strukture ki jih uporabljam pole v kodi) in razpravljalnica_grpc.pb.go(gRPC streznik vse definicije)
 
+protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative razpravljalnica.proto
+
 nove funkcije se spise kot: func (s *server) Create(ctx context.Context, in *protobufStorage.Todo) (*emptypb.Empty, error) {
 ...
 }
+
+cd projektnaPS/razpravljalnica
+poženeš kodo iz /razpravljalnica/:
+go run server/server.go
+go run client/client.go
