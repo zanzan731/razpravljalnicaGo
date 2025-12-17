@@ -127,6 +127,11 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 				continue
 			}
 			fmt.Println("Subscribing to topic", topicID, "…")
+			// dodaj:
+			// SubscriptionNodeResponse nres = GetSubcscriptionNode(SubscriptionNodeRequest)
+			// potem subscribeLoop kliče za noda nres (drugačen naslov kot glava, rep)
+			// Potem je client shranjen med subscriberje samo na tistem nodu in če crkne,
+			// se mora avtomatsko nazaj povezat, da bo še zmeraj dobival obvestila?
 			go subscribeLoop(c, topicID)
 		case "send":
 			if len(args) < 3 {
