@@ -188,6 +188,7 @@ type Message struct {
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	Likes         int32                  `protobuf:"varint,6,opt,name=likes,proto3" json:"likes,omitempty"`
 	Liked         []int64                `protobuf:"varint,7,rep,packed,name=liked,proto3" json:"liked,omitempty"`
+	Ver           int64                  `protobuf:"varint,8,opt,name=ver,proto3" json:"ver,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -269,6 +270,13 @@ func (x *Message) GetLiked() []int64 {
 		return x.Liked
 	}
 	return nil
+}
+
+func (x *Message) GetVer() int64 {
+	if x != nil {
+		return x.Ver
+	}
+	return 0
 }
 
 type Like struct {
@@ -1169,7 +1177,7 @@ const file_razpravljalnica_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"+\n" +
 	"\x05Topic\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\"\xc8\x01\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"\xda\x01\n" +
 	"\aMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x19\n" +
 	"\btopic_id\x18\x02 \x01(\x03R\atopicId\x12\x17\n" +
@@ -1178,7 +1186,8 @@ const file_razpravljalnica_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x14\n" +
 	"\x05likes\x18\x06 \x01(\x05R\x05likes\x12\x14\n" +
-	"\x05liked\x18\a \x03(\x03R\x05liked\"Y\n" +
+	"\x05liked\x18\a \x03(\x03R\x05liked\x12\x10\n" +
+	"\x03ver\x18\b \x01(\x03R\x03ver\"Y\n" +
 	"\x04Like\x12\x19\n" +
 	"\btopic_id\x18\x01 \x01(\x03R\atopicId\x12\x1d\n" +
 	"\n" +

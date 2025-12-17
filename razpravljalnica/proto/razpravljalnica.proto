@@ -28,6 +28,7 @@ message Message {
   google.protobuf.Timestamp created_at = 5;
   int32 likes = 6;
   repeated int64 liked = 7;
+  int64 ver = 8;
 }
 
 message Like {

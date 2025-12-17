@@ -110,6 +110,7 @@ func (s *messageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessag
 		CreatedAt: timestamppb.Now(), //to nastavi time na trenutn cajt na serverju type of *timestamppb.Timestamp
 		Likes:     0,                 //zcni z 0
 		Liked:     []int64{},
+		Ver:       0,
 	}
 	//lahk tud GetTopicId mogoce ne vem zakaj je ta Getter tudi dan najbrz je nek razlog
 	s.messages[req.TopicId] = append(s.messages[req.TopicId], message)
@@ -156,6 +157,7 @@ func (s *messageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMe
 				CreatedAt: timestamppb.Now(), //to nastavi time na trenutn cajt na serverju type of *timestamppb.Timestamp
 				Likes:     msg.Likes,
 				Liked:     msg.Liked,
+				Ver:       msg.Ver + 1,
 			}
 			s.messages[req.TopicId][i] = message
 			return message, nil

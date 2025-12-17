@@ -6,11 +6,11 @@ drugace generirat Id-je sam to potem zelo zakomplicira kodo lahko oziroma mogoce
 vsak server pokliče isto funkcijo na naslednjem (createUser, createTopic,...).
 Kličejo se rekurzivno, da se potrditev pravilno širi.
 Pri repu se ustavi in se v drugo smer pošlje potrditev te verzije podatkov.
+(Subscribe se mora poslati, le če je prišlo potrdilo do glave. Torej kdaj vejo
+vozlišča, da lahko pošljejo subscribe?)
 
 Problem je, ker moramo za vse to imeti version control, da vemo ali lahko
 na tem serverju beremo (če ima zadnjo potrjeno verzijo).
-userIdVer = make(map[Int64](Int64, bool))
-topicIdVer = make(map[Int64](Int64, bool))
 messageIdVer = make(map[Int64](Int64, bool))
 ... // ne vem, če je tu prou
 oz. strukturam dodamo verzijo? Ker kao lahko urejamo vmesnik.
@@ -24,12 +24,14 @@ Glava-...-A-B-C-...-Rep
 zato da mu A pošlje kar manjka. A pa mora C-ju poslat številko zadnje potrditve,
 da mu C lahko pošlje manjkajoče potrditve.<-TO DVOJE SE MENITA PREKO NADZORNE PLASTI
 
-- Če odpove glava pošlje nov naslov glave uporabniku.
+- Če odpove glava pošlje nov naslov glave uporabniku? (NE. Nova glava začne poslušati na
+naslovu, kjer je prej poslušala prejšnja glava?)
 - Če user ni dobil potrditve o zapisu še enkrat pošlje zahtevo po
-preteku časa.
+preteku časa. (Ali uporabiš context timer na glavi in pošlješ error, če ni bilo potrditve?
+Ali bo vedno dobil potrditev, zaradi nadzorne plasti?)
 
 4. Dodajanje vozlišč na rep:
-- Šele ko rep prepiše vse svoje podatke na novo vozlišče, to postane nov rep.
+- Šele ko rep prepiše vse svoje podatke na novo vozlišče, to postane nov rep. (ena gorutina prepisuje?)
 
 5. Nadzorna plast mora biti odporna na napake
 - Uporabimo Raft, ki je nekje že spisan.
