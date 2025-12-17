@@ -123,7 +123,7 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 			}
 			topicID := toInt64(args[1])
 			if topicID <= 0 {
-				fmt.Printf("TopicID must be a number bigger than 0.\nUsage: sub <topic-id>")
+				fmt.Printf("TopicID must be a number bigger than 0.\nUsage: sub <topic-id>\n")
 				continue
 			}
 			fmt.Println("Subscribing to topic", topicID, "…")
