@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -18,35 +19,81 @@ import (
 )
 
 func main() {
+	controlPlaneFlag := flag.String("control-plane", "localhost:6000", "control plane address")
+	flag.Parse()
+
 	reader := bufio.NewReader(os.Stdin)
-	// Connect
-	conn, err := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+
+	// Dubi head in tail iz control plane
+	cpConn, err := grpc.NewClient(*controlPlaneFlag, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatal("connection failed:", err)
+		log.Fatal("control-plane connection failed:", err)
 	}
-	defer conn.Close()
+	defer cpConn.Close() //da zpre conection predn se konca na koncu bi pozabu drgace, zdej a je defer slabsi ku ce napisem na koncu upam da to compiler pole prov nrdi ka jaz necem razmisljat o tem
+	cp := pb.NewControlPlaneClient(cpConn)
 
-	client := pb.NewMessageBoardClient(conn)
-	fmt.Println("Connected to server!")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	state, err := cp.GetClusterState(ctx, &emptypb.Empty{}) //head tail in chain
+	cancel()                                                //nismo dobili odgovora od control plane
+	if err != nil {
+		log.Fatal("failed to get cluster state:", err) //neki sfukan state na control plane
+	}
 
+	headAddr := state.GetHead().GetAddress() //kje je head
+	tailAddr := state.GetTail().GetAddress() //kje je tail
+	//////////////////////////////////// CONNECTION TO HEAD /////////////////////////////////////////////////////////////////
+	headConn, err := grpc.NewClient(headAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatal("head connection failed:", err)
+	}
+	//////////////////////////////////// CONNECTION TO TAIL /////////////////////////////////////////////////////////////////
+	var tailConn *grpc.ClientConn
+	///////////sam en server ne se dvakrat povezovat na isti port ka bos nrdu lahk sam probleme sploh ce ni pravih checkov....
+	if tailAddr == headAddr {
+		tailConn = headConn
+	} else {
+		//connect to tail
+		tailConn, err = grpc.NewClient(tailAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			headConn.Close()
+			log.Fatal("tail connection failed:", err)
+		}
+	}
+	///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	headClient := pb.NewMessageBoardClient(headConn)
+	tailClient := pb.NewMessageBoardClient(tailConn)
+	//pole vrzi vn zaenkrat pusti da vidis kam si connectan
+	fmt.Printf("Connected. head=%s tail=%s\n", headAddr, tailAddr)
+
+	///zacetek logina
 	fmt.Print("Enter username:")
-	//obstaja tud scanln sam se splaca pomojem bolj tko
-	username, _ := reader.ReadString('\n')
+	//obstaja tud scanln
+	username, _ := reader.ReadString('\n') //bere do newline lahk das kirkol znak drgac kr doro
 
 	//Sm ponesreci prej dal pred enter username in mi je crashavalo in nism vedu zakaj lol :/
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	user, err := client.CreateUser(ctx, &pb.CreateUserRequest{Name: username})
+	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+	user, err := headClient.CreateUser(ctx, &pb.CreateUserRequest{Name: username})
+	cancel()
 	if err != nil {
-		log.Fatal("Faled creating user:", err)
+		//zpri vse prej
+		headConn.Close()
+		if tailConn != nil && tailConn != headConn {
+			tailConn.Close()
+		}
+		log.Fatal("failed creating user:", err)
 	}
 	fmt.Println("Logged in as user: ", user.Name, "ID: ", user.Id)
-
-	//Interactive Shell
-	runShell(client, user.Id)
+	//Interactive Shell -- po novem rabi vse podatke o tem komu posiljat kaj... treba cekirat tud na serverju vse da se na pravih krajih bere in pise
+	runShell(cp, headClient, tailClient, user.Id)
+	//zpri se head in tail connection
+	headConn.Close()
+	//spomni se od prej lahk sta ista ne mores zprt ze zaprte povezave
+	if tailConn != nil && tailConn != headConn {
+		tailConn.Close()
+	}
 }
 
-func runShell(c pb.MessageBoardClient, userID int64) {
+func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.MessageBoardClient, userID int64) {
 	//nov reader ka je nova funkcija pomojem se ne da unega od gori nucat
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("")
@@ -87,7 +134,7 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 		//List all topics on server
 		case "topics":
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			resp, err := c.ListTopics(ctx, &emptypb.Empty{})
+			resp, err := tail.ListTopics(ctx, &emptypb.Empty{}) //klici tail za podatke -- reads tail! (sprememba iz prej ka je bil c. ka je itak bil sam en client)
 			cancel()
 			if err != nil {
 				fmt.Println("Error", err)
@@ -103,13 +150,13 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 		//Nrdi nov topic na serverju
 		case "newtopic":
 			if len(args) < 2 {
-				fmt.Printf("Usage: newtopic <topic-name>")
+				fmt.Println("Usage: newtopic <topic-name>")
 				continue
 			}
-			//Ime more bit single string tko da vrni nazaj v prvotno ce si delil prej ko si razdelil po presledkih (ce je zelel vec presledkov pa se lahk gre kr solit ka kdo bi to nrdu)
+			//Ime more bit single string tko da vrni nazaj v prvotno ce si delil prej ko si razdelil po presledkih (ce je zelel vec presledkov pa se lahk gre kr solit ka kdo bi to nrdu) --pozabi dela ka itak je seznam in zdruzujem s tem da dodam presledk in mam pole pac seznam daljsi ma so umes prazni ki jih zapomnem z presledki
 			name := strings.Join(args[1:], " ")
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			topic, err := c.CreateTopic(ctx, &pb.CreateTopicRequest{Name: name})
+			topic, err := head.CreateTopic(ctx, &pb.CreateTopicRequest{Name: name})
 			cancel()
 			if err != nil {
 				fmt.Println("Error: ", err)
@@ -127,12 +174,7 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 				continue
 			}
 			fmt.Println("Subscribing to topic", topicID, "…")
-			// dodaj:
-			// SubscriptionNodeResponse nres = GetSubcscriptionNode(SubscriptionNodeRequest)
-			// potem subscribeLoop kliče za noda nres (drugačen naslov kot glava, rep)
-			// Potem je client shranjen med subscriberje samo na tistem nodu in če crkne,
-			// se mora avtomatsko nazaj povezat, da bo še zmeraj dobival obvestila?
-			go subscribeLoop(c, topicID)
+			go subscribeLoop(cp, topicID, userID) //subscribamo se na node ki nam ga dodeli
 		case "send":
 			if len(args) < 3 {
 				fmt.Println("Usage: send <topic-id> <message>")
@@ -140,7 +182,7 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 			textMessage := strings.Join(args[2:], " ")
 			topicID := toInt64(args[1])
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			message, err := c.PostMessage(ctx, &pb.PostMessageRequest{TopicId: topicID, Text: textMessage, UserId: userID})
+			message, err := head.PostMessage(ctx, &pb.PostMessageRequest{TopicId: topicID, Text: textMessage, UserId: userID}) //send always to the head
 			cancel()
 			if err != nil {
 				fmt.Println("Error: ", err)
@@ -155,7 +197,7 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 			msgID := toInt64(args[2])
 			textMessage := strings.Join(args[3:], " ")
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			message, err := c.UpdateMessage(ctx, &pb.UpdateMessageRequest{TopicId: topicID, MessageId: msgID, UserId: userID, Text: textMessage})
+			message, err := head.UpdateMessage(ctx, &pb.UpdateMessageRequest{TopicId: topicID, MessageId: msgID, UserId: userID, Text: textMessage}) // update always to the head
 			cancel()
 			if err != nil {
 				fmt.Println("Error: ", err)
@@ -170,7 +212,7 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 			}
 			topicID := toInt64(args[1])
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			messages, err := c.GetMessages(ctx, &pb.GetMessagesRequest{TopicId: topicID})
+			messages, err := tail.GetMessages(ctx, &pb.GetMessagesRequest{TopicId: topicID}) //list all messages always to tail
 			cancel()
 			if err != nil {
 				fmt.Println("Error", err)
@@ -188,7 +230,7 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 			msgID := toInt64(args[2])
 
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			_, err := c.DeleteMessage(ctx, &pb.DeleteMessageRequest{MessageId: msgID, UserId: userID, TopicId: topicID})
+			_, err := head.DeleteMessage(ctx, &pb.DeleteMessageRequest{MessageId: msgID, UserId: userID, TopicId: topicID}) //del always to head
 			cancel()
 			if err != nil {
 				fmt.Println("Error: ", err)
@@ -203,7 +245,7 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 			msgID := toInt64(args[2])
 
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			message, err := c.LikeMessage(ctx, &pb.LikeMessageRequest{MessageId: msgID, UserId: userID, TopicId: topicID})
+			message, err := head.LikeMessage(ctx, &pb.LikeMessageRequest{MessageId: msgID, UserId: userID, TopicId: topicID}) // like always to head
 			cancel()
 			if err != nil {
 				fmt.Println("Error: ", err)
@@ -234,8 +276,29 @@ func runShell(c pb.MessageBoardClient, userID int64) {
 		}
 	}
 }
-func subscribeLoop(c pb.MessageBoardClient, topicID int64) {
-	stream, err := c.SubscribeTopic(context.Background(), &pb.SubscribeTopicRequest{TopicId: []int64{topicID}})
+func subscribeLoop(cp pb.ControlPlaneClient, topicID int64, userID int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	resp, err := cp.GetSubscriptionNode(ctx, &pb.SubscriptionNodeRequest{UserId: userID, TopicId: []int64{topicID}})
+	cancel()
+	if err != nil {
+		fmt.Println("Subscription node lookup failed:", err)
+		return
+	}
+
+	addr := resp.GetNode().GetAddress()
+	subConn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		fmt.Println("Connect to subscription node failed:", err)
+		return
+	}
+	defer subConn.Close()
+
+	subClient := pb.NewMessageBoardClient(subConn)
+	stream, err := subClient.SubscribeTopic(context.Background(), &pb.SubscribeTopicRequest{
+		TopicId:        []int64{topicID},
+		UserId:         userID,
+		SubscribeToken: resp.GetSubscribeToken(),
+	})
 	if err != nil {
 		fmt.Println("Subscribe failed:", err)
 		return

@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net"
 	pb "razpravljalnica/proto"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -25,19 +29,30 @@ type messageBoardServer struct {
 	//to ti da default vseh funkcij kar rabis go pol sam ustvari
 	pb.UnimplementedMessageBoardServer
 
-	mu sync.RWMutex // protect concurrent access
+	mu       sync.RWMutex // protect access
+	nodeInfo *pb.NodeInfo // vsi podatki tega noda
+	isHead   bool         //je head?
+	isTail   bool         //je tail?
 
-	nextUserID  int64 //globalen id za userje da nastavim naslednjemu
-	nextTopicID int64 //ist za topic
-	nextMsgID   int64 //ist za msg
+	controlPlaneAddr string //kje je control plane
+	nextUserID       int64  //globalen id za userje da nastavim naslednjemu
+	nextTopicID      int64  //ist za topic
+	nextMsgID        int64  //ist za msg
 	//v go je edina omejitev za dolzino tvoj spomin tko da chillamo
 	users    map[int64]*pb.User
 	topics   map[int64]*pb.Topic
 	messages map[int64][]*pb.Message
 
 	subscribers map[int64][]pb.MessageBoard_SubscribeTopicServer // topicID → streams
+
+	// zacetek replikacije dej prejsni server in naslednji
+	nextClient pb.MessageBoardClient
+	nextConn   *grpc.ClientConn
+	nextAddr   string
+	nextDialMu sync.Mutex
 }
 
+/* ne rabimo vec narejeno na control plane --zbrisi naslednjic ce vse dela ce ne pusti za testing
 func newServer() *messageBoardServer {
 	return &messageBoardServer{
 		users:       make(map[int64]*pb.User),
@@ -46,60 +61,202 @@ func newServer() *messageBoardServer {
 		subscribers: make(map[int64][]pb.MessageBoard_SubscribeTopicServer),
 	}
 }
+*/
+// checkIsHeadNow prasa v control plane kdo je head zato ka za nek razlog ce zelo hitro pozenem 2 mi lahko se zmedejo nodi tko da + lahk da head gre dol pole treba mal sprement
+func (s *messageBoardServer) checkIsHeadNow() bool {
+	// ne zelim shranjevat connectiona zato oprem en connection ki ga pole zaprem sam za to je chat pomagu pa reku da je to ok tko da recmo jaz nism preprican
+	conn, err := grpc.NewClient(s.controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		// Ce slucajn control plane ni vec up zapi tistemu kar mam tle cached... zaenkrat tko pole mogoc za zamenjat ma tud ce ne
+		s.mu.RLock()
+		isHead := s.isHead
+		s.mu.RUnlock()
+		log.Printf("Control plane did not respond, using cached isHead=%v for %s", isHead, s.nodeInfo.GetAddress())
+		return isHead
+	}
+	defer conn.Close() //ce je connection se vzpostavu ga na konci zbris
 
-// rpc CreateUser(CreateUserRequest) returns (User);
-func (s *messageBoardServer) CreateUser(ctx context.Context, req *pb.CreateUserRequest) (*pb.User, error) {
-	//ne pozabit locke ka do zdej si jih povsot jih rabis
+	cp := pb.NewControlPlaneClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	//dubi podatke s controla
+	state, err := cp.GetClusterState(ctx, &emptypb.Empty{})
+	cancel()
+	if err != nil {
+		// ce faila zaupi temu kar mas
+		s.mu.RLock()
+		isHead := s.isHead
+		s.mu.RUnlock()
+		log.Printf("GetClusterState failed: %v, using cached isHead=%v for %s", err, isHead, s.nodeInfo.GetAddress())
+		return isHead
+	}
+
+	isHeadNow := state.Head.Address == s.nodeInfo.GetAddress() //ce smo mi true drgac pac false
+	log.Printf("GetClusterState returned head without errors=%s, I am %s, so isHead=%v", state.Head.Address, s.nodeInfo.GetAddress(), isHeadNow)
+	return isHeadNow
+}
+
+// ali je iy serverja ali clienta check zato ka rabim vedet da se je na head v prvo poslalo in pole po tem pac dodas en podpis da ves da je ok - chatko pomagu
+func isInternalCall(ctx context.Context) bool {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return false
+	}
+	vals := md.Get("x-internal-replication")
+	return len(vals) > 0 && vals[0] == "true"
+}
+
+// replicate gre po chainu in replicata podatke tail neha replicatat ka nima vec naslednjika to je sam helper dejsnski replicate se izvaja zdravn zapisov
+func (s *messageBoardServer) replicate(fn func(ctx context.Context) error) error {
+	// dubi naslednjika ce ne ves za njegov obstoj
+	if err := s.ensureNextClient(); err != nil {
+		return fmt.Errorf("replication failed (next unavailable): %w", err)
+	}
+	if s.nextClient == nil {
+		return nil // smo na repu
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	// mark as internal replication call
+	ctx = metadata.AppendToOutgoingContext(ctx, "x-internal-replication", "true")
+	return fn(ctx)
+}
+
+// ensureNextClient dobi succesorja ce ga se nimamo
+func (s *messageBoardServer) ensureNextClient() error {
+	// ce ze mamo ne rab nc vracat
+	if s.nextClient != nil {
+		return nil
+	}
+
+	s.nextDialMu.Lock()
+	defer s.nextDialMu.Unlock()
+	//zakaj se enkrat daa ni kaka druga gorutina slucajn sla pisat kej in mi svinjat pac se en check ne skodi za vsak slucaj pac nrdimo
+	if s.nextClient != nil {
+		return nil
+	}
+
+	// Ce se ne vemo succesorja kljici control plane in ga dub ce obstaja
+	if s.nextAddr == "" && s.controlPlaneAddr != "" {
+		conn, err := grpc.NewClient(s.controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err == nil {
+			cp := pb.NewControlPlaneClient(conn)
+			state, err := cp.GetClusterState(context.Background(), &emptypb.Empty{})
+			conn.Close()
+			if err == nil {
+				for _, cn := range state.GetChain() {
+					if cn.GetInfo().GetAddress() == s.nodeInfo.GetAddress() {
+						s.nextAddr = cn.GetNext()
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if s.nextAddr == "" {
+		return nil // smo se vedn na repu
+	}
+
+	conn, err := grpc.NewClient(s.nextAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return err
+	}
+	s.nextConn = conn
+	s.nextClient = pb.NewMessageBoardClient(conn)
+	return nil
+}
+
+// za replikacijo user creata ka vedn gledas to na hedu da je res head in za pole notranjo replikacijo je to hitr fix ker pac me je metal vn pole za popravt
+func (s *messageBoardServer) applyCreateUser(req *pb.CreateUserRequest) *pb.User {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	//povecamo stevilo userjev
 	s.nextUserID++
-	//naredimo userja iz proto fila po njegovi strukturi z id in name
 	user := &pb.User{
 		Id:   s.nextUserID,
 		Name: req.GetName(),
 	}
 	s.users[user.Id] = user
+	return user
+}
+
+// rpc CreateUser(CreateUserRequest) returns (User);
+func (s *messageBoardServer) CreateUser(ctx context.Context, req *pb.CreateUserRequest) (*pb.User, error) {
+	// Check if external client call (not internal replication)
+	if !isInternalCall(ctx) {
+		s.mu.RLock()
+		isHead := s.isHead
+		s.mu.RUnlock()
+		if !isHead {
+			return nil, fmt.Errorf("write operation must be sent to head node")
+		}
+	}
+	log.Printf("CreateUser on %s for user %s", s.nodeInfo.GetAddress(), req.GetName())
+	// Add to this node/server
+	user := s.applyCreateUser(req)
+	log.Printf("Applied on %s, user ID=%d", s.nodeInfo.GetAddress(), user.Id)
+
+	// poslji naslednjiku
+	if err := s.replicate(func(ctx2 context.Context) error {
+		log.Printf("Forwarding CreateUser to successor")
+		_, err := s.nextClient.CreateUser(ctx2, req)
+		return err
+	}); err != nil {
+		log.Printf("Replication failed: %v", err)
+		return nil, err
+	}
 	return user, nil
+}
+
+// ista fora ku za userja i guess bom sam to delu ka idk ku drgace ka rabim spremljat ce pisem na pravo mesto ma pole bi rabu dat v message ce je blo ze cekirano na headu ka ku naj vem al je ta req prsu od clienta al serverja pac ja bullshit ma ajde
+func (s *messageBoardServer) applyCreateTopic(req *pb.CreateTopicRequest) *pb.Topic {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.nextTopicID++
+	topic := &pb.Topic{
+		Id:   s.nextTopicID,
+		Name: req.GetName(),
+	}
+	s.topics[topic.Id] = topic
+	return topic
 }
 
 // rpc CreateTopic(CreateTopicRequest) returns (Topic);
 func (s *messageBoardServer) CreateTopic(ctx context.Context, req *pb.CreateTopicRequest) (*pb.Topic, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	//povecamo stevilo topicov na serverju
-	s.nextTopicID++
-
-	//again id in name mogoce bi blo fajn da vem vse message pod topic ali je zadosti ce pod Message dam topic??? pac morda za iskanje lepsi tle spodi???
-	topic := &pb.Topic{
-		Id: s.nextTopicID,
-		//GetName je func znotraj
-		Name: req.GetName(),
+	// Check if external client call
+	if !isInternalCall(ctx) {
+		s.mu.RLock()
+		isHead := s.isHead
+		s.mu.RUnlock()
+		if !isHead {
+			return nil, fmt.Errorf("write operation must be sent to head node")
+		}
 	}
-	s.topics[topic.Id] = topic
+	topic := s.applyCreateTopic(req)
+
+	if err := s.replicate(func(ctx2 context.Context) error {
+		_, err := s.nextClient.CreateTopic(ctx2, req)
+		return err
+	}); err != nil {
+		return nil, err
+	}
 	return topic, nil
 }
 
-// rpc PostMessage(PostMessageRequest) returns (Message);
-func (s *messageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessageRequest) (*pb.Message, error) {
-	//treba preverit prvo ce obstaja User glede na to da pb.PostMessageRequest ima UserId lahk po tem iscem
-	//nuci go if za lepso preglednost lih ka ma to opcijo (spomini na prog v c ka to ni blo dovoljeno ma sm delal)
-	s.mu.RLock() //naj pocaka da se posta preden bere
+// applyPostMessage applies the post message operation
+func (s *messageBoardServer) applyPostMessage(req *pb.PostMessageRequest) (*pb.Message, error) {
+	s.mu.RLock()
 	if _, ok := s.users[req.UserId]; !ok {
 		s.mu.RUnlock()
-		//returni + Error message(v goju z malo zacetnico brez locil se neki SonarQube pritozuje drgace najbrz kaka navada ali razlog)
 		return nil, fmt.Errorf("user does not exist")
 	}
 	if _, ok := s.topics[req.TopicId]; !ok {
 		s.mu.RUnlock()
-		//returni + Error message
 		return nil, fmt.Errorf("topic does not exist")
 	}
 	s.mu.RUnlock()
 
-	//Ce po nekem cudezu gremo cez errorje rabimo nrditi post na topic
 	s.mu.Lock()
 	s.nextMsgID++
 	message := &pb.Message{
@@ -107,15 +264,13 @@ func (s *messageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessag
 		TopicId:   req.TopicId,
 		UserId:    req.UserId,
 		Text:      req.Text,
-		CreatedAt: timestamppb.Now(), //to nastavi time na trenutn cajt na serverju type of *timestamppb.Timestamp
-		Likes:     0,                 //zcni z 0
+		CreatedAt: timestamppb.Now(),
+		Likes:     0,
 		Liked:     []int64{},
 		Ver:       0,
 	}
-	//lahk tud GetTopicId mogoce ne vem zakaj je ta Getter tudi dan najbrz je nek razlog
 	s.messages[req.TopicId] = append(s.messages[req.TopicId], message)
 
-	//obvesti narocnike o novi objavi
 	event := &pb.MessageEvent{
 		SequenceNumber: message.Id,
 		Op:             pb.OpType_OP_POST,
@@ -125,27 +280,49 @@ func (s *messageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessag
 	subscribers := s.subscribers[req.TopicId]
 	s.mu.Unlock()
 
-	// Send to subscribers outside the lock to avoid deadlock
 	for _, sub := range subscribers {
 		sub.Send(event)
 	}
 	return message, nil
 }
 
-// rpc UpdateMessage(UpdateMessageRequest) returns (Message);
-func (s *messageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMessageRequest) (*pb.Message, error) {
+// rpc PostMessage(PostMessageRequest) returns (Message);
+func (s *messageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessageRequest) (*pb.Message, error) {
+	// Check if external client call
+	if !isInternalCall(ctx) {
+		s.mu.RLock()
+		isHead := s.isHead
+		s.mu.RUnlock()
+		if !isHead {
+			return nil, fmt.Errorf("write operation must be sent to head node")
+		}
+	}
+	message, err := s.applyPostMessage(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.replicate(func(rctx context.Context) error {
+		_, err := s.nextClient.PostMessage(rctx, req)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return message, nil
+}
+
+// applyUpdateMessage applies the update message operation
+func (s *messageBoardServer) applyUpdateMessage(req *pb.UpdateMessageRequest) (*pb.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	messages, ok := s.messages[req.TopicId]
-
 	if !ok {
 		return nil, fmt.Errorf("topic does not exist")
 	}
 
 	for i, msg := range messages {
 		if msg.Id == req.MessageId {
-			// ce user ni owner
 			if msg.UserId != req.UserId {
 				return nil, fmt.Errorf("user is not the owner of this message")
 			}
@@ -154,7 +331,7 @@ func (s *messageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMe
 				TopicId:   msg.TopicId,
 				UserId:    msg.UserId,
 				Text:      req.Text,
-				CreatedAt: timestamppb.Now(), //to nastavi time na trenutn cajt na serverju type of *timestamppb.Timestamp
+				CreatedAt: timestamppb.Now(),
 				Likes:     msg.Likes,
 				Liked:     msg.Liked,
 				Ver:       msg.Ver + 1,
@@ -163,44 +340,85 @@ func (s *messageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMe
 			return message, nil
 		}
 	}
-
-	// message ne obstaja
 	return nil, fmt.Errorf("message with this id does not exist")
+}
+
+// rpc UpdateMessage(UpdateMessageRequest) returns (Message);
+func (s *messageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMessageRequest) (*pb.Message, error) {
+	// Check if external client call
+	if !isInternalCall(ctx) {
+		s.mu.RLock()
+		isHead := s.isHead
+		s.mu.RUnlock()
+		if !isHead {
+			return nil, fmt.Errorf("write operation must be sent to head node")
+		}
+	}
+	message, err := s.applyUpdateMessage(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.replicate(func(rctx context.Context) error {
+		_, err := s.nextClient.UpdateMessage(rctx, req)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+
+	return message, nil
 }
 
 //  rpc DeleteMessage(DeleteMessageRequest) returns (google.protobuf.Empty);
 
-func (s *messageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMessageRequest) (*emptypb.Empty, error) {
+// applyDeleteMessage applies the delete message operation
+func (s *messageBoardServer) applyDeleteMessage(req *pb.DeleteMessageRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// dubi vse message za ta topic
 	messages, ok := s.messages[req.TopicId]
-	//ce ni tega topica mu reci naj se gre solit
 	if !ok {
-		return nil, fmt.Errorf("topic does not exist")
+		return fmt.Errorf("topic does not exist")
 	}
 
-	// isci skozi message
 	for i, msg := range messages {
 		if msg.Id == req.MessageId {
-			// ce user ni owner
 			if msg.UserId != req.UserId {
-				return nil, fmt.Errorf("user is not the owner of this message")
+				return fmt.Errorf("user is not the owner of this message")
 			}
-
-			// zbrisi message do ija brez ija in od ija naprej zdruzi da nimam praznih vmes pole
 			s.messages[req.TopicId] = append(messages[:i], messages[i+1:]...)
-			return &emptypb.Empty{}, nil
+			return nil
 		}
 	}
-
-	// message ne obstaja
-	return nil, fmt.Errorf("message with this id does not exist")
+	return fmt.Errorf("message with this id does not exist")
 }
 
-// rpc LikeMessage(LikeMessageRequest) returns (Message);
-func (s *messageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessageRequest) (*pb.Message, error) {
+func (s *messageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMessageRequest) (*emptypb.Empty, error) {
+	// Check if external client call
+	if !isInternalCall(ctx) {
+		s.mu.RLock()
+		isHead := s.isHead
+		s.mu.RUnlock()
+		if !isHead {
+			return nil, fmt.Errorf("write operation must be sent to head node")
+		}
+	}
+	if err := s.applyDeleteMessage(req); err != nil {
+		return nil, err
+	}
+
+	if err := s.replicate(func(rctx context.Context) error {
+		_, err := s.nextClient.DeleteMessage(rctx, req)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+// applyLikeMessage applies the like message operation
+func (s *messageBoardServer) applyLikeMessage(req *pb.LikeMessageRequest) (*pb.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -226,16 +444,38 @@ func (s *messageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessag
 	return nil, fmt.Errorf("message with this id not found")
 }
 
+// rpc LikeMessage(LikeMessageRequest) returns (Message);
+func (s *messageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessageRequest) (*pb.Message, error) {
+	// Check if external client call
+	if !isInternalCall(ctx) {
+		s.mu.RLock()
+		isHead := s.isHead
+		s.mu.RUnlock()
+		if !isHead {
+			return nil, fmt.Errorf("write operation must be sent to head node")
+		}
+	}
+	message, err := s.applyLikeMessage(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.replicate(func(rctx context.Context) error {
+		_, err := s.nextClient.LikeMessage(rctx, req)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+
+	return message, nil
+}
+
 // ///////////////////////////
 // rpc GetSubcscriptionNode(SubscriptionNodeRequest) returns (SubscriptionNodeResponse);
 func (s *messageBoardServer) GetSubcscriptionNode(ctx context.Context, req *pb.SubscriptionNodeRequest) (*pb.SubscriptionNodeResponse, error) {
-	//za implementirat vec ko bo vec nodov also ne lockat
 	return &pb.SubscriptionNodeResponse{
 		SubscribeToken: "OK",
-		Node: &pb.NodeInfo{
-			NodeId:  "main",
-			Address: "localhost:50051",
-		},
+		Node:           s.nodeInfo,
 	}, nil
 }
 
@@ -258,6 +498,48 @@ func (s *messageBoardServer) GetMessages(ctx context.Context, req *pb.GetMessage
 	//isto ku ce gres skozi vse nrdi basicly spread operator uporablji(zapomni si da je ta rec tud v go)
 	resp.Messages = append(resp.Messages, s.messages[req.TopicId]...)
 	return resp, nil
+}
+
+// refresha vsakih 5 secund in prasa controlPlane ej kaka je situacija pr tebi kaj se je kdo nov prjavu....
+func (s *messageBoardServer) startTopologyRefresh() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			conn, err := grpc.NewClient(s.controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				continue
+			}
+			cp := pb.NewControlPlaneClient(conn)
+			//dubi state
+			state, err := cp.GetClusterState(context.Background(), &emptypb.Empty{})
+			//zpri povezavo!!!!!!!
+			conn.Close()
+			if err != nil {
+				continue
+			}
+
+			// update head tail statuse
+			s.mu.Lock()
+			s.isHead = state.Head.Address == s.nodeInfo.GetAddress()
+			s.isTail = state.Tail.Address == s.nodeInfo.GetAddress()
+
+			for _, cn := range state.GetChain() {
+				if cn.GetInfo().GetAddress() == s.nodeInfo.GetAddress() {
+					newNextAddr := cn.GetNext()
+					if newNextAddr != s.nextAddr {
+						s.nextAddr = newNextAddr
+						if s.nextConn != nil {
+							s.nextConn.Close()
+						}
+						s.nextClient = nil //force reconect na naslednjem pisanju.... zaenkrat pole za sprement mogoc
+					}
+				}
+			}
+			s.mu.Unlock()
+		}
+	}()
 }
 
 // rpc SubscribeTopic(SubscribeTopicRequest) returns (stream MessageEvent);
@@ -296,14 +578,79 @@ func (s *messageBoardServer) SubscribeTopic(req *pb.SubscribeTopicRequest, strea
 }
 
 func main() {
-	lis, err := net.Listen("tcp", ":50051")
+	addrFlag := flag.String("addr", "localhost:50051", "address this node listens on")
+	controlPlaneFlag := flag.String("control-plane", "localhost:6000", "control plane address")
+	flag.Parse()
+
+	myAddr := *addrFlag
+	controlPlaneAddr := *controlPlaneFlag
+
+	node := &pb.NodeInfo{
+		Address: myAddr,
+	}
+
+	// connect to control plane
+	conn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+		log.Fatal(err)
+	}
+	defer conn.Close()
+
+	cp := pb.NewControlPlaneClient(conn)
+
+	// register node
+	_, err = cp.RegisterNode(context.Background(), node)
+	if err != nil {
+		log.Fatal("register failed:", err)
+	}
+
+	// cluster state iz control plaina
+	state, err := cp.GetClusterState(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	isHead := state.Head.Address == myAddr
+	isTail := state.Tail.Address == myAddr
+
+	nextAddr := ""
+	for _, cn := range state.GetChain() {
+		if cn.GetInfo().GetAddress() == myAddr {
+			nextAddr = cn.GetNext()
+			break
+		}
+	}
+
+	srv := &messageBoardServer{
+		nodeInfo:         node,
+		isHead:           isHead,
+		isTail:           isTail,
+		controlPlaneAddr: controlPlaneAddr,
+		users:            make(map[int64]*pb.User),
+		topics:           make(map[int64]*pb.Topic),
+		messages:         make(map[int64][]*pb.Message),
+		subscribers:      make(map[int64][]pb.MessageBoard_SubscribeTopicServer),
+		nextAddr:         nextAddr,
+	}
+	srv.startTopologyRefresh()
+	if nextAddr != "" {
+		nextConn, err := grpc.NewClient(nextAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatalf("failed to connect to next %s: %v", nextAddr, err)
+		}
+		srv.nextClient = pb.NewMessageBoardClient(nextConn)
+		srv.nextConn = nextConn
 	}
 
 	grpcServer := grpc.NewServer()
-	pb.RegisterMessageBoardServer(grpcServer, newServer())
+	pb.RegisterMessageBoardServer(grpcServer, srv)
 
-	log.Println("Server running on port 50051...")
+	lis, err := net.Listen("tcp", myAddr)
+	if err != nil {
+		log.Fatalf("failed to listen on %s: %v", myAddr, err)
+	}
+	log.Println("Node running at", myAddr, "head:", isHead, "tail:", isTail)
 	grpcServer.Serve(lis)
 }
+
+//writes go to head, reads go to tail

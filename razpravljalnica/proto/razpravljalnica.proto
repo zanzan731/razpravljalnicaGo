@@ -167,9 +167,17 @@ message MessageEvent {
 // Return the the head and the tail node address
 service ControlPlane {
   rpc GetClusterState(google.protobuf.Empty) returns (GetClusterStateResponse);
+  rpc RegisterNode(NodeInfo) returns (google.protobuf.Empty);
+  rpc GetSubscriptionNode(SubscriptionNodeRequest) returns (SubscriptionNodeResponse);
+}
+message ChainNode {
+  NodeInfo info = 1;
+  string next = 2;
+  string prev = 3;
 }
 
 message GetClusterStateResponse {
   NodeInfo head = 1;
   NodeInfo tail = 2;
+  repeated ChainNode chain = 3;
 }

@@ -1,0 +1,3 @@
+go run controlPlane.go
+go run server.go --addr localhost:50051 //tle rabis spreminjat addr ker OS ne pusti dva serverja na istem portu
+go run client.go
