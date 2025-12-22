@@ -153,6 +153,10 @@ message SubscriptionNodeResponse {
   NodeInfo node = 2;
 }
 
+message RegisterNodeResponse {
+  string node_id = 1; // id ki se dodeli registriranemu nodu
+}
+
 message MessageEvent {
   int64 sequence_number = 1; // monotonically increasing event number
   OpType op = 2; // type of event
@@ -167,8 +171,9 @@ message MessageEvent {
 // Return the the head and the tail node address
 service ControlPlane {
   rpc GetClusterState(google.protobuf.Empty) returns (GetClusterStateResponse);
-  rpc RegisterNode(NodeInfo) returns (google.protobuf.Empty);
+  rpc RegisterNode(NodeInfo) returns (RegisterNodeResponse);
   rpc GetSubscriptionNode(SubscriptionNodeRequest) returns (SubscriptionNodeResponse);
+  rpc Heartbeat(NodeInfo) returns (google.protobuf.Empty);
 }
 message ChainNode {
   NodeInfo info = 1;

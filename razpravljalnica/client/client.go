@@ -33,37 +33,10 @@ func main() {
 	cp := pb.NewControlPlaneClient(cpConn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	state, err := cp.GetClusterState(ctx, &emptypb.Empty{}) //head tail in chain
-	cancel()                                                //nismo dobili odgovora od control plane
-	if err != nil {
-		log.Fatal("failed to get cluster state:", err) //neki sfukan state na control plane
-	}
 
-	headAddr := state.GetHead().GetAddress() //kje je head
-	tailAddr := state.GetTail().GetAddress() //kje je tail
-	//////////////////////////////////// CONNECTION TO HEAD /////////////////////////////////////////////////////////////////
-	headConn, err := grpc.NewClient(headAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		log.Fatal("head connection failed:", err)
-	}
-	//////////////////////////////////// CONNECTION TO TAIL /////////////////////////////////////////////////////////////////
-	var tailConn *grpc.ClientConn
-	///////////sam en server ne se dvakrat povezovat na isti port ka bos nrdu lahk sam probleme sploh ce ni pravih checkov....
-	if tailAddr == headAddr {
-		tailConn = headConn
-	} else {
-		//connect to tail
-		tailConn, err = grpc.NewClient(tailAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			headConn.Close()
-			log.Fatal("tail connection failed:", err)
-		}
-	}
-	///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
 	headClient := pb.NewMessageBoardClient(headConn)
 	tailClient := pb.NewMessageBoardClient(tailConn)
-	//pole vrzi vn zaenkrat pusti da vidis kam si connectan
-	fmt.Printf("Connected. head=%s tail=%s\n", headAddr, tailAddr)
 
 	///zacetek logina
 	fmt.Print("Enter username:")
@@ -91,6 +64,38 @@ func main() {
 	if tailConn != nil && tailConn != headConn {
 		tailConn.Close()
 	}
+}
+
+func getHeadTailConn(cp pb.ControlPlaneClient, ctx context.Context, cancel context.CancelFunc) (*grpc.ClientConn, *grpc.ClientConn) {
+	state, err := cp.GetClusterState(ctx, &emptypb.Empty{}) //head tail in chain
+	cancel()                                                //nismo dobili odgovora od control plane
+	if err != nil {
+		log.Fatal("failed to get cluster state:", err) //neki sfukan state na control plane
+	}
+
+	headAddr := state.GetHead().GetAddress() //kje je head
+	tailAddr := state.GetTail().GetAddress() //kje je tail
+	//////////////////////////////////// CONNECTION TO HEAD /////////////////////////////////////////////////////////////////
+	headConn, err := grpc.NewClient(headAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatal("head connection failed:", err)
+	}
+	//////////////////////////////////// CONNECTION TO TAIL /////////////////////////////////////////////////////////////////
+	var tailConn *grpc.ClientConn
+	///////////sam en server ne se dvakrat povezovat na isti port ka bos nrdu lahk sam probleme sploh ce ni pravih checkov....
+	if tailAddr == headAddr {
+		tailConn = headConn
+	} else {
+		//connect to tail
+		tailConn, err = grpc.NewClient(tailAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			headConn.Close()
+			log.Fatal("tail connection failed:", err)
+		}
+	}
+	//pole vrzi vn zaenkrat pusti da vidis kam si connectan
+	fmt.Printf("Connected. head=%s tail=%s\n", headAddr, tailAddr)
+	return headConn, tailConn
 }
 
 func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.MessageBoardClient, userID int64) {
@@ -138,6 +143,10 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 			cancel()
 			if err != nil {
 				fmt.Println("Error", err)
+				// ponovno preveri head in tail
+				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				head = pb.NewMessageBoardClient(headConn)
+				tail = pb.NewMessageBoardClient(tailConn)
 				continue
 			}
 			if len(resp.Topics) == 0 {
@@ -160,6 +169,10 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 			cancel()
 			if err != nil {
 				fmt.Println("Error: ", err)
+				// ponovno preveri head in tail
+				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				head = pb.NewMessageBoardClient(headConn)
+				tail = pb.NewMessageBoardClient(tailConn)
 				continue
 			}
 			fmt.Printf("Created topic: [%d] %s\n", topic.Id, topic.Name)
@@ -186,6 +199,10 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 			cancel()
 			if err != nil {
 				fmt.Println("Error: ", err)
+				// ponovno preveri head in tail
+				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				head = pb.NewMessageBoardClient(headConn)
+				tail = pb.NewMessageBoardClient(tailConn)
 				continue
 			}
 			fmt.Printf("Posted message on topic %d: %s\n", message.TopicId, message.Text)
@@ -201,6 +218,10 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 			cancel()
 			if err != nil {
 				fmt.Println("Error: ", err)
+				// ponovno preveri head in tail
+				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				head = pb.NewMessageBoardClient(headConn)
+				tail = pb.NewMessageBoardClient(tailConn)
 				continue
 			}
 			fmt.Printf("Updated message %d on topic %d: %s\n", message.Id, message.TopicId, message.Text)
@@ -216,6 +237,10 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 			cancel()
 			if err != nil {
 				fmt.Println("Error", err)
+				// ponovno preveri head in tail
+				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				head = pb.NewMessageBoardClient(headConn)
+				tail = pb.NewMessageBoardClient(tailConn)
 				continue
 			}
 			fmt.Println("All messages for topic ", topicID, ":")
@@ -234,6 +259,10 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 			cancel()
 			if err != nil {
 				fmt.Println("Error: ", err)
+				// ponovno preveri head in tail
+				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				head = pb.NewMessageBoardClient(headConn)
+				tail = pb.NewMessageBoardClient(tailConn)
 				continue
 			}
 			fmt.Printf("Message %d succesfully deleted from topic %d\n", msgID, topicID)
@@ -249,6 +278,10 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 			cancel()
 			if err != nil {
 				fmt.Println("Error: ", err)
+				// ponovno preveri head in tail
+				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				head = pb.NewMessageBoardClient(headConn)
+				tail = pb.NewMessageBoardClient(tailConn)
 				continue
 			}
 			fmt.Printf("You liked msg: %d\n", message.Id)

@@ -599,10 +599,30 @@ func main() {
 	cp := pb.NewControlPlaneClient(conn)
 
 	// register node
-	_, err = cp.RegisterNode(context.Background(), node)
+	rnr, err := cp.RegisterNode(context.Background(), node)
 	if err != nil {
 		log.Fatal("register failed:", err)
+	} else {
+		node.NodeId = rnr.NodeId
 	}
+
+	// zaženi heartbeat v ozadju
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				_, err := cp.Heartbeat(context.Background(), node)
+				if err != nil {
+					log.Printf("heartbeat failed: %v", err)
+				}
+			default:
+				continue
+			}
+		}
+	}()
 
 	// cluster state iz control plaina
 	state, err := cp.GetClusterState(context.Background(), &emptypb.Empty{})

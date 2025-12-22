@@ -491,6 +491,7 @@ const (
 	ControlPlane_GetClusterState_FullMethodName     = "/razpravljalnica.ControlPlane/GetClusterState"
 	ControlPlane_RegisterNode_FullMethodName        = "/razpravljalnica.ControlPlane/RegisterNode"
 	ControlPlane_GetSubscriptionNode_FullMethodName = "/razpravljalnica.ControlPlane/GetSubscriptionNode"
+	ControlPlane_Heartbeat_FullMethodName           = "/razpravljalnica.ControlPlane/Heartbeat"
 )
 
 // ControlPlaneClient is the client API for ControlPlane service.
@@ -500,8 +501,9 @@ const (
 // Return the the head and the tail node address
 type ControlPlaneClient interface {
 	GetClusterState(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetClusterStateResponse, error)
-	RegisterNode(ctx context.Context, in *NodeInfo, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	RegisterNode(ctx context.Context, in *NodeInfo, opts ...grpc.CallOption) (*RegisterNodeResponse, error)
 	GetSubscriptionNode(ctx context.Context, in *SubscriptionNodeRequest, opts ...grpc.CallOption) (*SubscriptionNodeResponse, error)
+	Heartbeat(ctx context.Context, in *NodeInfo, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type controlPlaneClient struct {
@@ -522,9 +524,9 @@ func (c *controlPlaneClient) GetClusterState(ctx context.Context, in *emptypb.Em
 	return out, nil
 }
 
-func (c *controlPlaneClient) RegisterNode(ctx context.Context, in *NodeInfo, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *controlPlaneClient) RegisterNode(ctx context.Context, in *NodeInfo, opts ...grpc.CallOption) (*RegisterNodeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(RegisterNodeResponse)
 	err := c.cc.Invoke(ctx, ControlPlane_RegisterNode_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -542,6 +544,16 @@ func (c *controlPlaneClient) GetSubscriptionNode(ctx context.Context, in *Subscr
 	return out, nil
 }
 
+func (c *controlPlaneClient) Heartbeat(ctx context.Context, in *NodeInfo, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, ControlPlane_Heartbeat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ControlPlaneServer is the server API for ControlPlane service.
 // All implementations must embed UnimplementedControlPlaneServer
 // for forward compatibility.
@@ -549,8 +561,9 @@ func (c *controlPlaneClient) GetSubscriptionNode(ctx context.Context, in *Subscr
 // Return the the head and the tail node address
 type ControlPlaneServer interface {
 	GetClusterState(context.Context, *emptypb.Empty) (*GetClusterStateResponse, error)
-	RegisterNode(context.Context, *NodeInfo) (*emptypb.Empty, error)
+	RegisterNode(context.Context, *NodeInfo) (*RegisterNodeResponse, error)
 	GetSubscriptionNode(context.Context, *SubscriptionNodeRequest) (*SubscriptionNodeResponse, error)
+	Heartbeat(context.Context, *NodeInfo) (*emptypb.Empty, error)
 	mustEmbedUnimplementedControlPlaneServer()
 }
 
@@ -564,11 +577,14 @@ type UnimplementedControlPlaneServer struct{}
 func (UnimplementedControlPlaneServer) GetClusterState(context.Context, *emptypb.Empty) (*GetClusterStateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetClusterState not implemented")
 }
-func (UnimplementedControlPlaneServer) RegisterNode(context.Context, *NodeInfo) (*emptypb.Empty, error) {
+func (UnimplementedControlPlaneServer) RegisterNode(context.Context, *NodeInfo) (*RegisterNodeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RegisterNode not implemented")
 }
 func (UnimplementedControlPlaneServer) GetSubscriptionNode(context.Context, *SubscriptionNodeRequest) (*SubscriptionNodeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetSubscriptionNode not implemented")
+}
+func (UnimplementedControlPlaneServer) Heartbeat(context.Context, *NodeInfo) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method Heartbeat not implemented")
 }
 func (UnimplementedControlPlaneServer) mustEmbedUnimplementedControlPlaneServer() {}
 func (UnimplementedControlPlaneServer) testEmbeddedByValue()                      {}
@@ -645,6 +661,24 @@ func _ControlPlane_GetSubscriptionNode_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlPlane_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NodeInfo)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlPlaneServer).Heartbeat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlPlane_Heartbeat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlPlaneServer).Heartbeat(ctx, req.(*NodeInfo))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ControlPlane_ServiceDesc is the grpc.ServiceDesc for ControlPlane service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -663,6 +697,10 @@ var ControlPlane_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetSubscriptionNode",
 			Handler:    _ControlPlane_GetSubscriptionNode_Handler,
+		},
+		{
+			MethodName: "Heartbeat",
+			Handler:    _ControlPlane_Heartbeat_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -8,6 +8,7 @@ import (
 	pb "razpravljalnica/proto"
 	"strconv"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -18,22 +19,32 @@ type ControlPlaneServer struct {
 
 	mu sync.RWMutex
 
-	nodes      []*pb.NodeInfo
+	nodes      []*NodeTTL
 	nextNodeId int64
+}
+
+const nodeTTL = 10 * time.Second
+
+type NodeTTL struct { // node with time to live
+	node *pb.NodeInfo
+	ttl  *time.Timer
 }
 
 // trenutno je control plane samo en node,
 // potem morajo še z raftom komunicirat
 
 // vozlišče se prijavi in controlPlane ga shrani
-func (c *ControlPlaneServer) RegisterNode(ctx context.Context, node *pb.NodeInfo) (*emptypb.Empty, error) {
+func (c *ControlPlaneServer) RegisterNode(ctx context.Context, node *pb.NodeInfo) (*pb.RegisterNodeResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.nextNodeId++
 	node.NodeId = strconv.FormatInt(c.nextNodeId, 10) // control plane dodeli id
 	// control plane bi lahko tudi dodelil address, lahko pa ga podamo kot parameter ko zaženemo node
-	c.nodes = append(c.nodes, node)
-	return &emptypb.Empty{}, nil
+	nodet := &NodeTTL{node, time.AfterFunc(nodeTTL, func() {
+		c.removeNode(node.NodeId)
+	})}
+	c.nodes = append(c.nodes, nodet)
+	return &pb.RegisterNodeResponse{NodeId: node.NodeId}, nil
 }
 
 // vrne naslov trenutne glave in repa od serverja
@@ -45,22 +56,22 @@ func (c *ControlPlaneServer) GetClusterState(ctx context.Context, _ *emptypb.Emp
 	chain := make([]*pb.ChainNode, 0, len(c.nodes)) // to pomeni zcni seznam velikosti 0 ampak pre-allocate za len(c.nodes) sej lahk bi drugace ma to je lepo da lahk nucam append in da tud mu povem ej rezerviraj tolk placa da ne pole kake glupe nastanejo sicer ne bi smele ma ajde
 	//go ma tko lepo clean sintaxo love go <3
 	for i, n := range c.nodes {
-		cn := &pb.ChainNode{Info: n}
+		cn := &pb.ChainNode{Info: n.node}
 		// prvi ne ma za druge mu dodaj prejsnjega
 		if i > 0 {
-			cn.Prev = c.nodes[i-1].Address
+			cn.Prev = c.nodes[i-1].node.Address
 		}
 		//zadnji ne ma za druge mu dodaj naslednjega
 		if i < len(c.nodes)-1 {
-			cn.Next = c.nodes[i+1].Address
+			cn.Next = c.nodes[i+1].node.Address
 		}
 		chain = append(chain, cn)
 	}
 
 	return &pb.GetClusterStateResponse{
-		Head:  c.nodes[0],              //prvi head
-		Tail:  c.nodes[len(c.nodes)-1], //len vrne +1 ku pr c ka pac zcnes z 0 (ja sm falil na zacetku mb)
-		Chain: chain,                   //vrni tud cel chain naj majo te podatke lih vsi zarad mene security ni pomembn zaenkrat sam da dela in tega tud ne mislim popravljat iskren
+		Head:  c.nodes[0].node,              //prvi head
+		Tail:  c.nodes[len(c.nodes)-1].node, //len vrne +1 ku pr c ka pac zcnes z 0 (ja sm falil na zacetku mb)
+		Chain: chain,                        //vrni tud cel chain naj majo te podatke lih vsi zarad mene security ni pomembn zaenkrat sam da dela in tega tud ne mislim popravljat iskren
 	}, nil
 }
 
@@ -75,14 +86,70 @@ func (c *ControlPlaneServer) GetSubscriptionNode(ctx context.Context, req *pb.Su
 
 	//neki da je zaenkrat da porazdelimo userje po vozliscih ce ne stejemo da se tudi odjavijo bi blo popoln tud to
 	//ubistvi bom lih tko pustu to mi je prov vsec ka vec je kompliciranje sploh za nas projekt
-	idx := int(req.UserId) % len(c.nodes)
-	node := c.nodes[idx]
+	idx := strconv.Itoa(int(req.UserId) % len(c.nodes))
+	node := c.getNodeTTLById(idx)
+	if node == nil {
+		return nil, fmt.Errorf("Couldn't get subscription node. Try again.")
+	}
 
 	return &pb.SubscriptionNodeResponse{
-		SubscribeToken: "OK", //lahk JWT pol (a se mi bo res dalo najbrz ne)
-		Node:           node, //dej mu tistega ka smo ga gor izbrali
+		SubscribeToken: "OK",      //lahk JWT pol (a se mi bo res dalo najbrz ne)
+		Node:           node.node, //dej mu tistega ka smo ga gor izbrali
 	}, nil
 
+}
+
+// odstrani mrtev server, da lahko preveže okoli njega
+func (c *ControlPlaneServer) removeNode(nodeId string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	nodet := c.getNodeTTLById(nodeId)
+
+	nodet.ttl.Stop()
+	for i, nodet := range c.nodes {
+		if nodet.node.NodeId == nodeId {
+			c.nextNodeId--
+			c.nodes = append(c.nodes[:i], c.nodes[i+1:len(c.nodes)]...)
+			break
+		}
+	}
+
+	log.Printf("Node %s removed (TTL expired)", nodeId)
+	return nil
+}
+
+func (c *ControlPlaneServer) Heartbeat(ctx context.Context, node *pb.NodeInfo) (*emptypb.Empty, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, nodet := range c.nodes {
+		if nodet.node.NodeId == node.NodeId {
+
+			// resetira ttl
+			if !nodet.ttl.Stop() {
+				select {
+				case <-nodet.ttl.C:
+				default:
+				}
+			}
+			nodet.ttl.Reset(nodeTTL)
+
+			return &emptypb.Empty{}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("node not found")
+}
+
+func (c *ControlPlaneServer) getNodeTTLById(nodeId string) *NodeTTL {
+	for _, n := range c.nodes {
+		if n.node.NodeId == nodeId {
+			return n
+		}
+	}
+	// če ne dobi noda, ga odstranimo
+	c.removeNode(nodeId)
+	return nil
 }
 
 func newServer() *ControlPlaneServer {
