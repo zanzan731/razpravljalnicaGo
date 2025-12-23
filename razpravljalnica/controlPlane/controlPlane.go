@@ -103,19 +103,20 @@ func (c *ControlPlaneServer) GetSubscriptionNode(ctx context.Context, req *pb.Su
 func (c *ControlPlaneServer) removeNode(nodeId string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	nodet := c.getNodeTTLById(nodeId)
 
-	nodet.ttl.Stop()
 	for i, nodet := range c.nodes {
 		if nodet.node.NodeId == nodeId {
+			if nodet.ttl != nil {
+				nodet.ttl.Stop()
+			}
 			c.nextNodeId--
-			c.nodes = append(c.nodes[:i], c.nodes[i+1:len(c.nodes)]...)
-			break
+			c.nodes = append(c.nodes[:i], c.nodes[i+1:]...)
+			log.Printf("Node %s removed (TTL expired)", nodeId)
+			return nil
 		}
 	}
-
-	log.Printf("Node %s removed (TTL expired)", nodeId)
-	return nil
+	// node not found
+	return fmt.Errorf("node %s not found", nodeId)
 }
 
 func (c *ControlPlaneServer) Heartbeat(ctx context.Context, node *pb.NodeInfo) (*emptypb.Empty, error) {

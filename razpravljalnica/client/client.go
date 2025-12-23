@@ -14,7 +14,9 @@ import (
 	pb "razpravljalnica/proto"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -141,12 +143,19 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			resp, err := tail.ListTopics(ctx, &emptypb.Empty{}) //klici tail za podatke -- reads tail! (sprememba iz prej ka je bil c. ka je itak bil sam en client)
 			cancel()
-			if err != nil {
-				fmt.Println("Error", err)
+			if status.Code(err) == codes.Unavailable {
+				// če server ni dosegljiv
 				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+
+				headConn, tailConn := getHeadTailConn(cp, context.Background(), cancel) // zamenjaj context, za test context.Background()
+
 				head = pb.NewMessageBoardClient(headConn)
 				tail = pb.NewMessageBoardClient(tailConn)
+				fmt.Println("Error: Failed to do operation. Reconnected.")
+				continue
+			}
+			if err != nil {
+				fmt.Println("Error", err)
 				continue
 			}
 			if len(resp.Topics) == 0 {
@@ -167,12 +176,17 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			topic, err := head.CreateTopic(ctx, &pb.CreateTopicRequest{Name: name})
 			cancel()
-			if err != nil {
-				fmt.Println("Error: ", err)
+			if status.Code(err) == codes.Unavailable {
+				// če server ni dosegljiv
 				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				headConn, tailConn := getHeadTailConn(cp, context.Background(), cancel)
 				head = pb.NewMessageBoardClient(headConn)
 				tail = pb.NewMessageBoardClient(tailConn)
+				fmt.Println("Error: Failed to do operation. Reconnected.")
+				continue
+			}
+			if err != nil {
+				fmt.Println("Error: ", err)
 				continue
 			}
 			fmt.Printf("Created topic: [%d] %s\n", topic.Id, topic.Name)
@@ -180,6 +194,7 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 		case "sub":
 			if len(args) < 2 {
 				fmt.Println("Usage: sub <topic-id>")
+				continue
 			}
 			topicID := toInt64(args[1])
 			if topicID <= 0 {
@@ -191,24 +206,31 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 		case "send":
 			if len(args) < 3 {
 				fmt.Println("Usage: send <topic-id> <message>")
+				continue
 			}
 			textMessage := strings.Join(args[2:], " ")
 			topicID := toInt64(args[1])
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			message, err := head.PostMessage(ctx, &pb.PostMessageRequest{TopicId: topicID, Text: textMessage, UserId: userID}) //send always to the head
 			cancel()
-			if err != nil {
-				fmt.Println("Error: ", err)
+			if status.Code(err) == codes.Unavailable {
+				// če server ni dosegljiv
 				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				headConn, tailConn := getHeadTailConn(cp, context.Background(), cancel)
 				head = pb.NewMessageBoardClient(headConn)
 				tail = pb.NewMessageBoardClient(tailConn)
+				fmt.Println("Error: Failed to do operation. Reconnected.")
+				continue
+			}
+			if err != nil {
+				fmt.Println("Error: ", err)
 				continue
 			}
 			fmt.Printf("Posted message on topic %d: %s\n", message.TopicId, message.Text)
 		case "update":
 			if len(args) < 4 {
 				fmt.Println("Usage: update <topic-id> <msg-id> <message>")
+				continue
 			}
 			topicID := toInt64(args[1])
 			msgID := toInt64(args[2])
@@ -216,12 +238,16 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			message, err := head.UpdateMessage(ctx, &pb.UpdateMessageRequest{TopicId: topicID, MessageId: msgID, UserId: userID, Text: textMessage}) // update always to the head
 			cancel()
-			if err != nil {
-				fmt.Println("Error: ", err)
+			if status.Code(err) == codes.Unavailable {
+				// če server ni dosegljiv
 				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				headConn, tailConn := getHeadTailConn(cp, context.Background(), cancel)
 				head = pb.NewMessageBoardClient(headConn)
 				tail = pb.NewMessageBoardClient(tailConn)
+				fmt.Println("Error: Failed to do operation. Reconnected.")
+			}
+			if err != nil {
+				fmt.Println("Error: ", err)
 				continue
 			}
 			fmt.Printf("Updated message %d on topic %d: %s\n", message.Id, message.TopicId, message.Text)
@@ -230,17 +256,23 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 		case "msgs":
 			if len(args) != 2 {
 				fmt.Println("Usage: msgs <topic-id>")
+				continue
 			}
 			topicID := toInt64(args[1])
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			messages, err := tail.GetMessages(ctx, &pb.GetMessagesRequest{TopicId: topicID}) //list all messages always to tail
 			cancel()
-			if err != nil {
-				fmt.Println("Error", err)
+			if status.Code(err) == codes.Unavailable {
+				// če server ni dosegljiv
 				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				headConn, tailConn := getHeadTailConn(cp, context.Background(), cancel)
 				head = pb.NewMessageBoardClient(headConn)
 				tail = pb.NewMessageBoardClient(tailConn)
+				fmt.Println("Error: Failed to do operation. Reconnected.")
+				continue
+			}
+			if err != nil {
+				fmt.Println("Error", err)
 				continue
 			}
 			fmt.Println("All messages for topic ", topicID, ":")
@@ -250,6 +282,7 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 		case "del":
 			if len(args) != 3 {
 				fmt.Println("Usage: del <topic-id> <msg-id>")
+				continue
 			}
 			topicID := toInt64(args[1])
 			msgID := toInt64(args[2])
@@ -257,18 +290,24 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			_, err := head.DeleteMessage(ctx, &pb.DeleteMessageRequest{MessageId: msgID, UserId: userID, TopicId: topicID}) //del always to head
 			cancel()
-			if err != nil {
-				fmt.Println("Error: ", err)
+			if status.Code(err) == codes.Unavailable {
+				// če server ni dosegljiv
 				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				headConn, tailConn := getHeadTailConn(cp, context.Background(), cancel)
 				head = pb.NewMessageBoardClient(headConn)
 				tail = pb.NewMessageBoardClient(tailConn)
+				fmt.Println("Error: Failed to do operation. Reconnected.")
+				continue
+			}
+			if err != nil {
+				fmt.Println("Error: ", err)
 				continue
 			}
 			fmt.Printf("Message %d succesfully deleted from topic %d\n", msgID, topicID)
 		case "like":
 			if len(args) != 3 {
 				fmt.Println("Usage: like <topic-id> <msg-id>")
+				continue
 			}
 			topicID := toInt64(args[1])
 			msgID := toInt64(args[2])
@@ -276,12 +315,17 @@ func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.Mess
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			message, err := head.LikeMessage(ctx, &pb.LikeMessageRequest{MessageId: msgID, UserId: userID, TopicId: topicID}) // like always to head
 			cancel()
-			if err != nil {
-				fmt.Println("Error: ", err)
+			if status.Code(err) == codes.Unavailable {
+				// če server ni dosegljiv
 				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+				headConn, tailConn := getHeadTailConn(cp, context.Background(), cancel)
 				head = pb.NewMessageBoardClient(headConn)
 				tail = pb.NewMessageBoardClient(tailConn)
+				fmt.Println("Error: Failed to do operation. Reconnected.")
+				continue
+			}
+			if err != nil {
+				fmt.Println("Error: ", err)
 				continue
 			}
 			fmt.Printf("You liked msg: %d\n", message.Id)
