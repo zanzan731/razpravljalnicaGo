@@ -29,6 +29,7 @@ message Message {
   int32 likes = 6;
   repeated int64 liked = 7;
   int64 ver = 8;
+  bool dirty = 9;
 }
 
 message Like {
@@ -87,6 +88,9 @@ service  MessageBoard{
 
   // Subscribe to topics; goes to the node returned by head
   rpc SubscribeTopic(SubscribeTopicRequest) returns (stream MessageEvent);
+
+  // pošlje podatke nsalednjemu vozlišču
+  rpc GetSyncStream(GetSyncStreamRequest) returns (stream SyncEvent);
 
 }
 
@@ -162,6 +166,20 @@ message MessageEvent {
   OpType op = 2; // type of event
   Message message = 3;
   google.protobuf.Timestamp event_at = 4; // timestamp of the event
+}
+
+message GetSyncStreamRequest {
+  int64 user_id = 1;
+  int64 topic_id = 2;
+  int64 message_id = 3;
+}
+
+message SyncEvent {
+  oneof data {
+    User user = 1;
+    Topic topic = 2;
+    Message message = 3;
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

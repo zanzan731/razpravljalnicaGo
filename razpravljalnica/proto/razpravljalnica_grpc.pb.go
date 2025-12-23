@@ -30,6 +30,7 @@ const (
 	MessageBoard_ListTopics_FullMethodName           = "/razpravljalnica.MessageBoard/ListTopics"
 	MessageBoard_GetMessages_FullMethodName          = "/razpravljalnica.MessageBoard/GetMessages"
 	MessageBoard_SubscribeTopic_FullMethodName       = "/razpravljalnica.MessageBoard/SubscribeTopic"
+	MessageBoard_GetSyncStream_FullMethodName        = "/razpravljalnica.MessageBoard/GetSyncStream"
 )
 
 // MessageBoardClient is the client API for MessageBoard service.
@@ -56,6 +57,8 @@ type MessageBoardClient interface {
 	GetMessages(ctx context.Context, in *GetMessagesRequest, opts ...grpc.CallOption) (*GetMessagesResponse, error)
 	// Subscribe to topics; goes to the node returned by head
 	SubscribeTopic(ctx context.Context, in *SubscribeTopicRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MessageEvent], error)
+	// pošlje podatke nsalednjemu vozlišču
+	GetSyncStream(ctx context.Context, in *GetSyncStreamRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SyncEvent], error)
 }
 
 type messageBoardClient struct {
@@ -175,6 +178,25 @@ func (c *messageBoardClient) SubscribeTopic(ctx context.Context, in *SubscribeTo
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type MessageBoard_SubscribeTopicClient = grpc.ServerStreamingClient[MessageEvent]
 
+func (c *messageBoardClient) GetSyncStream(ctx context.Context, in *GetSyncStreamRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SyncEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &MessageBoard_ServiceDesc.Streams[1], MessageBoard_GetSyncStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[GetSyncStreamRequest, SyncEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type MessageBoard_GetSyncStreamClient = grpc.ServerStreamingClient[SyncEvent]
+
 // MessageBoardServer is the server API for MessageBoard service.
 // All implementations must embed UnimplementedMessageBoardServer
 // for forward compatibility.
@@ -199,6 +221,8 @@ type MessageBoardServer interface {
 	GetMessages(context.Context, *GetMessagesRequest) (*GetMessagesResponse, error)
 	// Subscribe to topics; goes to the node returned by head
 	SubscribeTopic(*SubscribeTopicRequest, grpc.ServerStreamingServer[MessageEvent]) error
+	// pošlje podatke nsalednjemu vozlišču
+	GetSyncStream(*GetSyncStreamRequest, grpc.ServerStreamingServer[SyncEvent]) error
 	mustEmbedUnimplementedMessageBoardServer()
 }
 
@@ -238,6 +262,9 @@ func (UnimplementedMessageBoardServer) GetMessages(context.Context, *GetMessages
 }
 func (UnimplementedMessageBoardServer) SubscribeTopic(*SubscribeTopicRequest, grpc.ServerStreamingServer[MessageEvent]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeTopic not implemented")
+}
+func (UnimplementedMessageBoardServer) GetSyncStream(*GetSyncStreamRequest, grpc.ServerStreamingServer[SyncEvent]) error {
+	return status.Error(codes.Unimplemented, "method GetSyncStream not implemented")
 }
 func (UnimplementedMessageBoardServer) mustEmbedUnimplementedMessageBoardServer() {}
 func (UnimplementedMessageBoardServer) testEmbeddedByValue()                      {}
@@ -433,6 +460,17 @@ func _MessageBoard_SubscribeTopic_Handler(srv interface{}, stream grpc.ServerStr
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type MessageBoard_SubscribeTopicServer = grpc.ServerStreamingServer[MessageEvent]
 
+func _MessageBoard_GetSyncStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(GetSyncStreamRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(MessageBoardServer).GetSyncStream(m, &grpc.GenericServerStream[GetSyncStreamRequest, SyncEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type MessageBoard_GetSyncStreamServer = grpc.ServerStreamingServer[SyncEvent]
+
 // MessageBoard_ServiceDesc is the grpc.ServiceDesc for MessageBoard service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -481,6 +519,11 @@ var MessageBoard_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "SubscribeTopic",
 			Handler:       _MessageBoard_SubscribeTopic_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "GetSyncStream",
+			Handler:       _MessageBoard_GetSyncStream_Handler,
 			ServerStreams: true,
 		},
 	},

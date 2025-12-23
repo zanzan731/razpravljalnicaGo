@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	pb "razpravljalnica/proto"
@@ -13,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -52,16 +54,35 @@ type messageBoardServer struct {
 	nextDialMu sync.Mutex
 }
 
-/* ne rabimo vec narejeno na control plane --zbrisi naslednjic ce vse dela ce ne pusti za testing
-func newServer() *messageBoardServer {
-	return &messageBoardServer{
-		users:       make(map[int64]*pb.User),
-		topics:      make(map[int64]*pb.Topic),
-		messages:    make(map[int64][]*pb.Message),
-		subscribers: make(map[int64][]pb.MessageBoard_SubscribeTopicServer),
+/*
+ne rabimo vec narejeno na control plane --zbrisi naslednjic ce vse dela ce ne pusti za testing
+
+	func newServer() *messageBoardServer {
+		return &messageBoardServer{
+			users:       make(map[int64]*pb.User),
+			topics:      make(map[int64]*pb.Topic),
+			messages:    make(map[int64][]*pb.Message),
+			subscribers: make(map[int64][]pb.MessageBoard_SubscribeTopicServer),
+		}
+	}
+*/
+func (s *messageBoardServer) printAll() {
+	fmt.Println("Users: ")
+	for _, u := range s.users {
+		fmt.Println(u.Id, u.Name)
+	}
+	fmt.Println("Topics: ")
+	for _, u := range s.topics {
+		fmt.Println(u.Id, u.Name)
+	}
+	fmt.Println("Messages: ")
+	for _, t := range s.topics {
+		for _, u := range s.messages[t.Id] {
+			fmt.Println(u.Text)
+		}
 	}
 }
-*/
+
 // checkIsHeadNow prasa v control plane kdo je head zato ka za nek razlog ce zelo hitro pozenem 2 mi lahko se zmedejo nodi tko da + lahk da head gre dol pole treba mal sprement
 func (s *messageBoardServer) checkIsHeadNow() bool {
 	// ne zelim shranjevat connectiona zato oprem en connection ki ga pole zaprem sam za to je chat pomagu pa reku da je to ok tko da recmo jaz nism preprican
@@ -268,6 +289,7 @@ func (s *messageBoardServer) applyPostMessage(req *pb.PostMessageRequest) (*pb.M
 		Likes:     0,
 		Liked:     []int64{},
 		Ver:       0,
+		Dirty:     true,
 	}
 	s.messages[req.TopicId] = append(s.messages[req.TopicId], message)
 
@@ -577,6 +599,33 @@ func (s *messageBoardServer) SubscribeTopic(req *pb.SubscribeTopicRequest, strea
 	return nil
 }
 
+// rpc GetSyncStream(GetSyncStreamRequest) returns (stream SyncEvent);
+func (s *messageBoardServer) GetSyncStream(req *pb.GetSyncStreamRequest, stream pb.MessageBoard_GetSyncStreamServer) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock() // če hočemo unblocking mora bit lock unlock okoli vsakega posebej v loopu
+	// Send users
+	for _, user := range s.users {
+		if err := stream.Send(&pb.SyncEvent{Data: &pb.SyncEvent_User{User: user}}); err != nil {
+			return err
+		}
+	}
+	// Send topics
+	for _, topic := range s.topics {
+		if err := stream.Send(&pb.SyncEvent{Data: &pb.SyncEvent_Topic{Topic: topic}}); err != nil {
+			return err
+		}
+	}
+	// Send messages
+	for _, t := range s.topics {
+		for _, msg := range s.messages[t.GetId()] {
+			if err := stream.Send(&pb.SyncEvent{Data: &pb.SyncEvent_Message{Message: msg}}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func main() {
 	addrFlag := flag.String("addr", "localhost:50051", "address this node listens on")
 	controlPlaneFlag := flag.String("control-plane", "localhost:6000", "control plane address")
@@ -597,7 +646,63 @@ func main() {
 	defer conn.Close()
 
 	cp := pb.NewControlPlaneClient(conn)
-
+	// connect to contrl plane to get tail addres, connect to tail and start copying data
+	// if not nil
+	// must copy nextUserID, nextTopicID, nextMsgID, users, topics, messages
+	users := make(map[int64]*pb.User)
+	topics := make(map[int64]*pb.Topic)
+	messages := make(map[int64][]*pb.Message)
+	var skip bool = false
+	state, err := cp.GetClusterState(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		st, ok := status.FromError(err)
+		if ok {
+			if st.Message() == "no nodes registered" {
+				skip = true
+			} else {
+				log.Fatal("tail connection failed:", err)
+			}
+		}
+	}
+	if !skip {
+		tailAddr := state.GetTail().GetAddress()
+		tailConn, err := grpc.NewClient(tailAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatal("tail connection failed:", err)
+		}
+		tailClient := pb.NewMessageBoardClient(tailConn)
+		req := &pb.GetSyncStreamRequest{
+			UserId:    0,
+			TopicId:   0,
+			MessageId: 0,
+		}
+		stream, err := tailClient.GetSyncStream(context.Background(), req) // na tem streamu bodo podatki, ki jih morš syncat
+		if err != nil {
+			log.Fatal("tail connection failed:", err)
+		}
+		for {
+			//Recv() sprejme naslednji response from server
+			event, err := stream.Recv()
+			//EOF se poslje na koncu ko se streem terminata
+			if err == io.EOF {
+				fmt.Println("Synchronization complete")
+				break
+			}
+			if err != nil {
+				fmt.Println("Stream error:", err)
+				return
+			}
+			switch event.Data.(type) {
+			case *pb.SyncEvent_User:
+				users[event.GetUser().GetId()] = event.GetUser()
+			case *pb.SyncEvent_Topic:
+				topics[event.GetTopic().GetId()] = event.GetTopic()
+			case *pb.SyncEvent_Message:
+				fmt.Println(event.GetMessage())
+				messages[event.GetMessage().TopicId] = append(messages[event.GetMessage().TopicId], event.GetMessage())
+			}
+		}
+	}
 	// register node
 	rnr, err := cp.RegisterNode(context.Background(), node)
 	if err != nil {
@@ -625,7 +730,7 @@ func main() {
 	}()
 
 	// cluster state iz control plaina
-	state, err := cp.GetClusterState(context.Background(), &emptypb.Empty{})
+	state, err = cp.GetClusterState(context.Background(), &emptypb.Empty{})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -646,9 +751,9 @@ func main() {
 		isHead:           isHead,
 		isTail:           isTail,
 		controlPlaneAddr: controlPlaneAddr,
-		users:            make(map[int64]*pb.User),
-		topics:           make(map[int64]*pb.Topic),
-		messages:         make(map[int64][]*pb.Message),
+		users:            users,
+		topics:           topics,
+		messages:         messages,
 		subscribers:      make(map[int64][]pb.MessageBoard_SubscribeTopicServer),
 		nextAddr:         nextAddr,
 	}
@@ -670,6 +775,15 @@ func main() {
 		log.Fatalf("failed to listen on %s: %v", myAddr, err)
 	}
 	log.Println("Node running at", myAddr, "head:", isHead, "tail:", isTail)
+
+	/*go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			srv.printAll()
+		}
+	}()*/
 	grpcServer.Serve(lis)
 }
 

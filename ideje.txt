@@ -1,13 +1,7 @@
-1. V post massege metodi bi blo fajn da se lahk preverja tudi ime userja
-torej bi rabil v PostMessageRequest tudi UserName ali pa mogoce bi rabu
-drugace generirat Id-je sam to potem zelo zakomplicira kodo lahko oziroma mogoce slovar??
-
 2. Pri verižni replikaciji morajo itak imet vsi enake podatke, zato lahko samo
 vsak server pokliče isto funkcijo na naslednjem (createUser, createTopic,...).
 Kličejo se rekurzivno, da se potrditev pravilno širi.
 Pri repu se ustavi in se v drugo smer pošlje potrditev te verzije podatkov.
-(Subscribe se mora poslati, le če je prišlo potrdilo do glave. Torej kdaj vejo
-vozlišča, da lahko pošljejo subscribe?)
 
 Problem je, ker moramo za vse to imeti version control, da vemo ali lahko
 na tem serverju beremo (če ima zadnjo potrjeno verzijo).
@@ -15,17 +9,11 @@ messageIdVer = make(map[Int64](Int64, bool))
 ... // ne vem, če je tu prou
 oz. strukturam dodamo verzijo? Ker kao lahko urejamo vmesnik.
 
-3. Za 9-10 nadzorna raven:
-- ves čas pošilja ping vsem serverjem, zato da če se kakšen pokvari lahko
-spelje pot okoli njega (prejšnjemu pošlje naslov naslednjega in obratno).
-
 Glava-...-A-B-C-...-Rep
 Če B odpove, mora C A-ju poslat številko zadnjega podatka, ki ga ima potrjenega,
 zato da mu A pošlje kar manjka. A pa mora C-ju poslat številko zadnje potrditve,
 da mu C lahko pošlje manjkajoče potrditve.<-TO DVOJE SE MENITA PREKO NADZORNE PLASTI
 
-- Če odpove glava pošlje nov naslov glave uporabniku? (NE. Nova glava začne poslušati na
-naslovu, kjer je prej poslušala prejšnja glava?)
 - Če user ni dobil potrditve o zapisu še enkrat pošlje zahtevo po
 preteku časa. (Ali uporabiš context timer na glavi in pošlješ error, če ni bilo potrditve?
 Ali bo vedno dobil potrditev, zaradi nadzorne plasti?)
