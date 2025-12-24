@@ -652,6 +652,9 @@ func main() {
 	users := make(map[int64]*pb.User)
 	topics := make(map[int64]*pb.Topic)
 	messages := make(map[int64][]*pb.Message)
+	var nextUserID int64 = 0
+	var nextTopicID int64 = 0
+	var nextMsgID int64 = 0
 	var skip bool = false
 	state, err := cp.GetClusterState(context.Background(), &emptypb.Empty{})
 	if err != nil {
@@ -702,6 +705,17 @@ func main() {
 				messages[event.GetMessage().TopicId] = append(messages[event.GetMessage().TopicId], event.GetMessage())
 			}
 		}
+		// posodobi next user,topic,msg id
+		for _, u := range users {
+			nextUserID = max(u.Id, nextUserID)
+		}
+		for _, t := range topics {
+			nextTopicID = max(t.Id, nextTopicID)
+			for _, m := range messages[t.Id] {
+				nextMsgID = max(m.Id, nextMsgID)
+			}
+		}
+
 	}
 	// register node
 	rnr, err := cp.RegisterNode(context.Background(), node)
@@ -751,6 +765,9 @@ func main() {
 		isHead:           isHead,
 		isTail:           isTail,
 		controlPlaneAddr: controlPlaneAddr,
+		nextUserID:       nextUserID,
+		nextTopicID:      nextTopicID,
+		nextMsgID:        nextMsgID,
 		users:            users,
 		topics:           topics,
 		messages:         messages,
