@@ -776,14 +776,14 @@ func main() {
 	}
 	log.Println("Node running at", myAddr, "head:", isHead, "tail:", isTail)
 
-	/*go func() {
+	go func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 
 		for range ticker.C {
 			srv.printAll()
 		}
-	}()*/
+	}()
 	grpcServer.Serve(lis)
 }
 
