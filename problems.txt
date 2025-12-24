@@ -1,3 +1,4 @@
 Wrong error when updationg messages that does not exist Error:  rpc error: code = Unknown desc = topic does not exist
 
 - neomejeno se lahko subscribeaš na isti topic
+- users in topics se ne replicirajo nazaj! (messages pa se) za stare message
