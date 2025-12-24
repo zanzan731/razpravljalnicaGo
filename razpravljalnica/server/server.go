@@ -493,8 +493,8 @@ func (s *messageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessag
 }
 
 // ///////////////////////////
-// rpc GetSubcscriptionNode(SubscriptionNodeRequest) returns (SubscriptionNodeResponse);
-func (s *messageBoardServer) GetSubcscriptionNode(ctx context.Context, req *pb.SubscriptionNodeRequest) (*pb.SubscriptionNodeResponse, error) {
+// rpc GetSubscriptionNode(SubscriptionNodeRequest) returns (SubscriptionNodeResponse);
+func (s *messageBoardServer) GetSubscriptionNode(ctx context.Context, req *pb.SubscriptionNodeRequest) (*pb.SubscriptionNodeResponse, error) {
 	return &pb.SubscriptionNodeResponse{
 		SubscribeToken: "OK",
 		Node:           s.nodeInfo,
@@ -792,15 +792,15 @@ func main() {
 		log.Fatalf("failed to listen on %s: %v", myAddr, err)
 	}
 	log.Println("Node running at", myAddr, "head:", isHead, "tail:", isTail)
+	/*
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
 
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			srv.printAll()
-		}
-	}()
+			for range ticker.C {
+				srv.printAll()
+			}
+		}()*/
 	grpcServer.Serve(lis)
 }
 

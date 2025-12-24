@@ -1547,7 +1547,7 @@ const file_razpravljalnica_proto_rawDesc = "" +
 	"\aOP_POST\x10\x00\x12\v\n" +
 	"\aOP_LIKE\x10\x01\x12\r\n" +
 	"\tOP_DELETE\x10\x02\x12\r\n" +
-	"\tOP_UPDATE\x10\x032\xa4\a\n" +
+	"\tOP_UPDATE\x10\x032\xa3\a\n" +
 	"\fMessageBoard\x12G\n" +
 	"\n" +
 	"CreateUser\x12\".razpravljalnica.CreateUserRequest\x1a\x15.razpravljalnica.User\x12J\n" +
@@ -1555,8 +1555,8 @@ const file_razpravljalnica_proto_rawDesc = "" +
 	"\vPostMessage\x12#.razpravljalnica.PostMessageRequest\x1a\x18.razpravljalnica.Message\x12P\n" +
 	"\rUpdateMessage\x12%.razpravljalnica.UpdateMessageRequest\x1a\x18.razpravljalnica.Message\x12N\n" +
 	"\rDeleteMessage\x12%.razpravljalnica.DeleteMessageRequest\x1a\x16.google.protobuf.Empty\x12L\n" +
-	"\vLikeMessage\x12#.razpravljalnica.LikeMessageRequest\x1a\x18.razpravljalnica.Message\x12k\n" +
-	"\x14GetSubcscriptionNode\x12(.razpravljalnica.SubscriptionNodeRequest\x1a).razpravljalnica.SubscriptionNodeResponse\x12I\n" +
+	"\vLikeMessage\x12#.razpravljalnica.LikeMessageRequest\x1a\x18.razpravljalnica.Message\x12j\n" +
+	"\x13GetSubscriptionNode\x12(.razpravljalnica.SubscriptionNodeRequest\x1a).razpravljalnica.SubscriptionNodeResponse\x12I\n" +
 	"\n" +
 	"ListTopics\x12\x16.google.protobuf.Empty\x1a#.razpravljalnica.ListTopicsResponse\x12X\n" +
 	"\vGetMessages\x12#.razpravljalnica.GetMessagesRequest\x1a$.razpravljalnica.GetMessagesResponse\x12Y\n" +
@@ -1631,7 +1631,7 @@ var file_razpravljalnica_proto_depIdxs = []int32{
 	10, // 17: razpravljalnica.MessageBoard.UpdateMessage:input_type -> razpravljalnica.UpdateMessageRequest
 	9,  // 18: razpravljalnica.MessageBoard.DeleteMessage:input_type -> razpravljalnica.DeleteMessageRequest
 	11, // 19: razpravljalnica.MessageBoard.LikeMessage:input_type -> razpravljalnica.LikeMessageRequest
-	16, // 20: razpravljalnica.MessageBoard.GetSubcscriptionNode:input_type -> razpravljalnica.SubscriptionNodeRequest
+	16, // 20: razpravljalnica.MessageBoard.GetSubscriptionNode:input_type -> razpravljalnica.SubscriptionNodeRequest
 	25, // 21: razpravljalnica.MessageBoard.ListTopics:input_type -> google.protobuf.Empty
 	13, // 22: razpravljalnica.MessageBoard.GetMessages:input_type -> razpravljalnica.GetMessagesRequest
 	15, // 23: razpravljalnica.MessageBoard.SubscribeTopic:input_type -> razpravljalnica.SubscribeTopicRequest
@@ -1646,7 +1646,7 @@ var file_razpravljalnica_proto_depIdxs = []int32{
 	3,  // 32: razpravljalnica.MessageBoard.UpdateMessage:output_type -> razpravljalnica.Message
 	25, // 33: razpravljalnica.MessageBoard.DeleteMessage:output_type -> google.protobuf.Empty
 	3,  // 34: razpravljalnica.MessageBoard.LikeMessage:output_type -> razpravljalnica.Message
-	17, // 35: razpravljalnica.MessageBoard.GetSubcscriptionNode:output_type -> razpravljalnica.SubscriptionNodeResponse
+	17, // 35: razpravljalnica.MessageBoard.GetSubscriptionNode:output_type -> razpravljalnica.SubscriptionNodeResponse
 	12, // 36: razpravljalnica.MessageBoard.ListTopics:output_type -> razpravljalnica.ListTopicsResponse
 	14, // 37: razpravljalnica.MessageBoard.GetMessages:output_type -> razpravljalnica.GetMessagesResponse
 	19, // 38: razpravljalnica.MessageBoard.SubscribeTopic:output_type -> razpravljalnica.MessageEvent
