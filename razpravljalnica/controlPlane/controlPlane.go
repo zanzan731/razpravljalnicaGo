@@ -86,8 +86,8 @@ func (c *ControlPlaneServer) GetSubscriptionNode(ctx context.Context, req *pb.Su
 
 	//neki da je zaenkrat da porazdelimo userje po vozliscih ce ne stejemo da se tudi odjavijo bi blo popoln tud to
 	//ubistvi bom lih tko pustu to mi je prov vsec ka vec je kompliciranje sploh za nas projekt
-	idx := strconv.Itoa(int(req.UserId) % len(c.nodes))
-	node := c.getNodeTTLById(idx)
+	idx := int(req.UserId) % len(c.nodes)
+	node := c.nodes[idx]
 	if node == nil {
 		return nil, fmt.Errorf("Couldn't get subscription node. Try again.")
 	}
