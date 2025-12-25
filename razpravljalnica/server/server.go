@@ -1,8 +1,7 @@
-package main
+package server
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -626,18 +625,15 @@ func (s *messageBoardServer) GetSyncStream(req *pb.GetSyncStreamRequest, stream 
 	return nil
 }
 
-func main() {
-	addrFlag := flag.String("addr", "localhost:50051", "address this node listens on")
-	controlPlaneFlag := flag.String("control-plane", "localhost:6000", "control plane address")
-	flag.Parse()
-
-	myAddr := *addrFlag
-	controlPlaneAddr := *controlPlaneFlag
-
+// addr == myAddr
+func Run(addr, controlPlaneAddr string) {
+	//zato da windows ni tecn in da lazje klices
+	addr = "localhost:" + addr
+	controlPlaneAddr = "localhost:" + controlPlaneAddr
+	//////////////////////////////////////
 	node := &pb.NodeInfo{
-		Address: myAddr,
+		Address: addr,
 	}
-
 	// connect to control plane
 	conn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -749,12 +745,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	isHead := state.Head.Address == myAddr
-	isTail := state.Tail.Address == myAddr
+	isHead := state.Head.Address == addr
+	isTail := state.Tail.Address == addr
 
 	nextAddr := ""
 	for _, cn := range state.GetChain() {
-		if cn.GetInfo().GetAddress() == myAddr {
+		if cn.GetInfo().GetAddress() == addr {
 			nextAddr = cn.GetNext()
 			break
 		}
@@ -787,11 +783,11 @@ func main() {
 	grpcServer := grpc.NewServer()
 	pb.RegisterMessageBoardServer(grpcServer, srv)
 
-	lis, err := net.Listen("tcp", myAddr)
+	lis, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("failed to listen on %s: %v", myAddr, err)
+		log.Fatalf("failed to listen on %s: %v", addr, err)
 	}
-	log.Println("Node running at", myAddr, "head:", isHead, "tail:", isTail)
+	log.Println("Node running at", addr, "head:", isHead, "tail:", isTail)
 	/*
 		go func() {
 			ticker := time.NewTicker(2 * time.Second)

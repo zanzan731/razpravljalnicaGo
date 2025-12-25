@@ -1,3 +1,17 @@
-go run controlPlane.go
-go run server.go --addr localhost:50051 //tle rabis spreminjat addr ker OS ne pusti dva serverja na istem portu
-go run client.go
+Zaradi CLI cobre lahko vse zaganjas znotraj razpravljalnice, torej cd razpravljalnica pole pa napises commande:
+
+go run . control-plane (additonal flag --addr (default 6000))
+go run . server  (additional flags --addr (default 50051) --control-plane (default 6000))
+go run . client (additonal flags --control-plane (default 6000))
+
+ce zelis dodaten flag ga dodaj v cmd datoteko in pole v datoteki s kodo dodas znotraj Run se ta flag in mas, pisi mi ce bos nucu nrdim 123 to
+
+za build lahko se zdej zbuilda vse v en binary in sicer z commandom:
+go build - o razpravljalnica.exe . (.exe je zarad tega ka drgace windows ne ve kako zagnat to ko vpises v terminal sm se mal zajebaval
+ce je na mac ali linux bo najbrz dovolj go build - o razpravljalnica .)
+
+potem lahko zazenes z 
+./razpravljalnica.exe control-plane
+./razpravljalnica.exe server
+./razpravljalnica.exe client
+(flagi so vsi isto kot zgoraj, zaenkrat je vse localhost ce bo za zamenjat ali ce gre kdaj v kako produkcijo kar ne bo je to za spremenit sam na zacetku vsake Run funkcije kjer lepim string z navadnim "localhost:" + addr je delal in pac ce ne rabim fmt zakaj pa ne)

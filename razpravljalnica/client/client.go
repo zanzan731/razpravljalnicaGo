@@ -1,8 +1,7 @@
-package main
+package client
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -49,12 +48,10 @@ type UI struct {
 	Tail pb.MessageBoardClient
 }
 
-func main() {
-	controlPlaneFlag := flag.String("control-plane", "localhost:6000", "control plane address")
-	flag.Parse()
-
+func Run(controlPlaneAddr string) {
 	// Dubi head in tail iz control plane
-	cpConn, err := grpc.NewClient(*controlPlaneFlag, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	controlPlaneAddr = "localhost:" + controlPlaneAddr
+	cpConn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatal("control-plane connection failed:", err)
 	}

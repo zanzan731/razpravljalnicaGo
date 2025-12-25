@@ -1,4 +1,6 @@
-package main
+package controlplane
+
+//se je preimenovalo ker je case sensitive ocitn
 
 import (
 	"context"
@@ -161,8 +163,11 @@ func newServer() *ControlPlaneServer {
 // server nodi pošiljajo heartbeat de vemo de so še živi
 // client bo lohk od control planea zahteval naslov glave in repa (kliče v intervalih
 // ali kadar je kak error)
-func main() {
-	lis, err := net.Listen("tcp", ":6000")
+func Run(addr string) {
+	//da dela sam lokalno da ne odpiramo portov pole se lahk zakomentira, zamenju sm ka je windows firewall tecn (z razlogom ma komu se da)
+	addr = "localhost:" + addr
+	///////////////////////
+	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
