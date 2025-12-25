@@ -504,8 +504,8 @@ func (ui *UI) buildMessageEditForm() {
 
 	ui.MessageEditForm.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEscape {
-			ui.Pages.SwitchToPage("messages")
-			ui.App.SetFocus(ui.MessagesView)
+			ui.Pages.SwitchToPage("messages-update-delete")
+			ui.App.SetFocus(ui.MessagesUpdateDeleteView)
 			return nil
 		}
 		return event
