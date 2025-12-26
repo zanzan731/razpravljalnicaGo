@@ -1,0 +1,14 @@
+go test (lahk z -v al brez) (pozene tud fuz ma nrdi mislim da brez dejanskega fuzz sam uno kar je Add idk nism sure)
+
+Server:
+za server ne rabis control plane al karkoli, testirajo se metode!!!
+Nism delal testov za benchmark kljub temu da v skripti so, se mi ne zdijo zanimivi za ta projekt
+za fuzz: 
+go test -fuzz=FuzzCreateUser -fuzztime=100s (to je od serverja je crazy vse passal) a ja also idk zakaj mores podat tocn funkcijo ki jo ces fuzzat??
+
+
+Control plane:
+za control plane zazeni sam go test
+
+Client:
+za client je itak sam prazno ka pac kaj je za testirat nc zares lahk pa se vedn zalaufas z go test
