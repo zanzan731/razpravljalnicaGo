@@ -4,6 +4,6 @@ import (
 	"testing"
 )
 
-func TestExampleUtility(t *testing.T) {
+func TestExample(t *testing.T) {
 	t.Skip("Nothing to realy test here")
 }
