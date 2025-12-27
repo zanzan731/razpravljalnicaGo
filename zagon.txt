@@ -20,8 +20,8 @@ potem lahko zazenes z
 obvezno addr = raft-1000 !!! kr sm tku napisu v controlplane.go raftAddrToGrpcAddr
 tu je mal drgači "--bs" pomeni true in "--bs=false" je false
 lohk jih poženeš kolkr hočeš (ponavadi 3 al 5):
-go run . control-plane --addr localhost:6000 --raft localhost:7000 --id 1 --bs --leader localhost:6000
-go run . control-plane --addr localhost:6001 --raft localhost:7001 --id 2 --bs=false --leader localhost:6000
-go run . control-plane --addr localhost:6002 --raft localhost:7002 --id 3 --bs=false --leader localhost:6000
-go run . control-plane --addr localhost:6003 --raft localhost:7003 --id 4 --bs=false --leader localhost:6000
-go run . control-plane --addr localhost:6004 --raft localhost:7004 --id 5 --bs=false --leader localhost:6000
+go run . control-plane --addr 6000 --raft 7000 --id 1 --bs --leader 6000
+go run . control-plane --addr 6001 --raft 7001 --id 2 --bs=false --leader 6000
+go run . control-plane --addr 6002 --raft 7002 --id 3 --bs=false --leader 6000
+go run . control-plane --addr 6003 --raft 7003 --id 4 --bs=false --leader 6000
+go run . control-plane --addr 6004 --raft 7004 --id 5 --bs=false --leader 6000

@@ -24,10 +24,10 @@ var controlPlaneCmd = &cobra.Command{
 func init() {
 	//simple --flags premaknjeni sm
 	//dodamo controlPlane command da ma tud on en command
-	controlPlaneCmd.Flags().StringVar(&cpAddr, "addr", "localhost:6000", "Listen address")
-	controlPlaneCmd.Flags().StringVar(&raftAddr, "raft", "localhost:7000", "Raft address")
+	controlPlaneCmd.Flags().StringVar(&cpAddr, "addr", "6000", "Listen address")
+	controlPlaneCmd.Flags().StringVar(&raftAddr, "raft", "7000", "Raft address")
 	controlPlaneCmd.Flags().StringVar(&nodeID, "id", "1", "Node ID")
 	controlPlaneCmd.Flags().BoolVar(&bootstrap, "bs", false, "True only for leader")
-	controlPlaneCmd.Flags().StringVar(&leaderGrpcAddr, "leader", "localhost:6000", "Leader grpc address")
+	controlPlaneCmd.Flags().StringVar(&leaderGrpcAddr, "leader", "6000", "Leader grpc address")
 	rootCmd.AddCommand(controlPlaneCmd)
 }

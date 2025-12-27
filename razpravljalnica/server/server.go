@@ -68,21 +68,27 @@ ne rabimo vec narejeno na control plane --zbrisi naslednjic ce vse dela ce ne pu
 	}
 */
 func getCPAddr(cpAddrs []string) string {
+	log.Printf("Looking for control plane leader among: %v", cpAddrs)
 	for { // ponavlja dokler ne dobi leaderja
 		for _, addr := range cpAddrs {
+			log.Printf("Trying control plane at %s...", addr)
 			cpConn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 			if err != nil { // poskusimo drugi naslov
+				log.Printf("Failed to create client for %s: %v", addr, err)
 				continue
 			}
 			cp := pb.NewControlPlaneClient(cpConn)
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			res, err := cp.GetLeaderAddr(ctx, &emptypb.Empty{})
-			if res.LeaderAddr != "" { // found leader
-				cancel()
+			cancel()
+			cpConn.Close()                                        // close immediately, not with defer
+			if err == nil && res != nil && res.LeaderAddr != "" { // found leader
+				log.Printf("Found control plane leader at %s", res.LeaderAddr)
 				return res.LeaderAddr
 			}
-			cancel()
+			log.Printf("No valid leader response from %s (err=%v, res=%v)", addr, err, res)
 		}
+		log.Printf("No control plane leader found, retrying in 1 second...")
 		time.Sleep(1 * time.Second)
 	}
 }
@@ -121,34 +127,17 @@ func (s *messageBoardServer) checkIsHeadNow(cpAddrs []string) bool {
 	cp := pb.NewControlPlaneClient(conn)
 
 	//dubi podatke s controla
-	var state *pb.GetClusterStateResponse
-	for {
-		var err error
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		state, err = cp.GetClusterState(ctx, &emptypb.Empty{})
-		cancel()
-		if err == nil {
-			break
-		} else {
-			var controlPlaneAddr string = getCPAddr(cpAddrs)
-			cpConn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			if err != nil {
-				log.Fatal("control-plane connection failed:", err)
-			}
-			defer cpConn.Close()
-			cp = pb.NewControlPlaneClient(cpConn)
-			continue
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	state, err := cp.GetClusterState(ctx, &emptypb.Empty{})
+	cancel()
+	if err != nil {
+		// ce faila zaupi temu kar mas
+		s.mu.RLock()
+		isHead := s.isHead
+		s.mu.RUnlock()
+		log.Printf("GetClusterState failed: %v, using cached isHead=%v for %s", err, isHead, s.nodeInfo.GetAddress())
+		return isHead
 	}
-
-	//if err != nil {
-	//	// ce faila zaupi temu kar mas
-	//	s.mu.RLock()
-	//	isHead := s.isHead
-	//	s.mu.RUnlock()
-	//	log.Printf("GetClusterState failed: %v, using cached isHead=%v for %s", err, isHead, s.nodeInfo.GetAddress())
-	//	return isHead
-	//}
 
 	isHeadNow := state.Head.Address == s.nodeInfo.GetAddress() //ce smo mi true drgac pac false
 	log.Printf("GetClusterState returned head without errors=%s, I am %s, so isHead=%v", state.Head.Address, s.nodeInfo.GetAddress(), isHeadNow)
@@ -200,28 +189,14 @@ func (s *messageBoardServer) ensureNextClient(cpAddrs []string) error {
 		conn, err := grpc.NewClient(s.controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err == nil {
 			cp := pb.NewControlPlaneClient(conn)
-			var state *pb.GetClusterStateResponse
-			for {
-				var err error
-				state, err = cp.GetClusterState(context.Background(), &emptypb.Empty{})
-				if err == nil {
-					break
-				} else {
-					var controlPlaneAddr string = getCPAddr(cpAddrs)
-					cpConn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-					if err != nil {
-						log.Fatal("control-plane connection failed:", err)
-					}
-					defer cpConn.Close()
-					cp = pb.NewControlPlaneClient(cpConn)
-					continue
-				}
-			}
+			state, err := cp.GetClusterState(context.Background(), &emptypb.Empty{})
 			conn.Close()
-			for _, cn := range state.GetChain() {
-				if cn.GetInfo().GetAddress() == s.nodeInfo.GetAddress() {
-					s.nextAddr = cn.GetNext()
-					break
+			if err == nil {
+				for _, cn := range state.GetChain() {
+					if cn.GetInfo().GetAddress() == s.nodeInfo.GetAddress() {
+						s.nextAddr = cn.GetNext()
+						break
+					}
 				}
 			}
 		}
@@ -587,28 +562,12 @@ func (s *messageBoardServer) startTopologyRefresh() {
 			}
 			cp := pb.NewControlPlaneClient(conn)
 			//dubi state
-			var state *pb.GetClusterStateResponse
-			for {
-				var err error
-				state, err = cp.GetClusterState(context.Background(), &emptypb.Empty{})
-				if err == nil {
-					break
-				} else {
-					var controlPlaneAddr string = getCPAddr(s.cpAddrs)
-					cpConn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-					if err != nil {
-						log.Fatal("control-plane connection failed:", err)
-					}
-					defer cpConn.Close()
-					cp = pb.NewControlPlaneClient(cpConn)
-					continue
-				}
-			}
+			state, err := cp.GetClusterState(context.Background(), &emptypb.Empty{})
 			//zpri povezavo!!!!!!!
 			conn.Close()
-			//if err != nil {
-			//	continue
-			//}
+			if err != nil {
+				continue
+			}
 
 			// update head tail statuse
 			s.mu.Lock()
@@ -696,6 +655,9 @@ func (s *messageBoardServer) GetSyncStream(req *pb.GetSyncStreamRequest, stream 
 
 // addr == myAddr
 func Run(addr string, cpAddrs []string) {
+	log.Printf("Starting message board server...")
+	log.Printf("Server will listen on: localhost:%s", addr)
+	log.Printf("Control plane addresses: %v", cpAddrs)
 	var controlPlaneAddr string = getCPAddr(cpAddrs)
 	//zato da windows ni tecn in da lazje klices
 	addr = "localhost:" + addr
@@ -722,23 +684,7 @@ func Run(addr string, cpAddrs []string) {
 	var nextTopicID int64 = 0
 	var nextMsgID int64 = 0
 	var skip bool = false
-	var state *pb.GetClusterStateResponse
-	for {
-		var err error
-		state, err = cp.GetClusterState(context.Background(), &emptypb.Empty{})
-		if err == nil {
-			break
-		} else {
-			var controlPlaneAddr string = getCPAddr(cpAddrs)
-			cpConn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			if err != nil {
-				log.Fatal("control-plane connection failed:", err)
-			}
-			defer cpConn.Close()
-			cp = pb.NewControlPlaneClient(cpConn)
-			continue
-		}
-	}
+	state, err := cp.GetClusterState(context.Background(), &emptypb.Empty{})
 	if err != nil {
 		st, ok := status.FromError(err)
 		if ok {
@@ -800,22 +746,9 @@ func Run(addr string, cpAddrs []string) {
 
 	}
 	// register node
-	var rnr *pb.RegisterNodeResponse
-	for {
-		var err error
-		rnr, err = cp.RegisterNode(context.Background(), node)
-		if err == nil {
-			break
-		} else {
-			var controlPlaneAddr string = getCPAddr(cpAddrs)
-			cpConn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			if err != nil {
-				log.Fatal("control-plane connection failed:", err)
-			}
-			defer cpConn.Close()
-			cp = pb.NewControlPlaneClient(cpConn)
-			continue
-		}
+	rnr, err := cp.RegisterNode(context.Background(), node)
+	if err != nil {
+		log.Fatal("Failed to register node:", err)
 	}
 	node.NodeId = rnr.NodeId
 
@@ -830,13 +763,19 @@ func Run(addr string, cpAddrs []string) {
 				_, err := cp.Heartbeat(context.Background(), node)
 				if err != nil {
 					log.Printf("heartbeat failed: %v", err)
-					var controlPlaneAddr string = getCPAddr(cpAddrs)
-					cpConn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+					// rediscover leader and replace shared connection/client
+					newAddr := getCPAddr(cpAddrs)
+					newConn, err := grpc.NewClient(newAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 					if err != nil {
-						log.Fatal("control-plane connection failed:", err)
+						log.Printf("control-plane reconnect failed: %v", err)
+						continue
 					}
-					cpConn.Close()
-					cp = pb.NewControlPlaneClient(cpConn)
+					if conn != nil {
+						conn.Close()
+					}
+					conn = newConn
+					controlPlaneAddr = newAddr
+					cp = pb.NewControlPlaneClient(conn)
 					continue
 				}
 			default:
@@ -846,20 +785,21 @@ func Run(addr string, cpAddrs []string) {
 	}()
 
 	// cluster state iz control plaina
-	for {
-		var err error
-		state, err = cp.GetClusterState(context.Background(), &emptypb.Empty{})
-		if err == nil {
-			break
-		} else {
-			var controlPlaneAddr string = getCPAddr(cpAddrs)
-			cpConn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			if err != nil {
-				log.Fatal("control-plane connection failed:", err)
+	// Wait briefly until our registration is visible to the control plane
+	{
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			state, err = cp.GetClusterState(context.Background(), &emptypb.Empty{})
+			if err == nil {
+				break
 			}
-			defer cpConn.Close()
-			cp = pb.NewControlPlaneClient(cpConn)
-			continue
+			st, ok := status.FromError(err)
+			if ok && st.Message() == "no nodes registered" && time.Now().Before(deadline) {
+				log.Printf("Cluster state not ready yet (no nodes registered), retrying...")
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			log.Fatal("Failed to get cluster state:", err)
 		}
 	}
 
@@ -907,15 +847,6 @@ func Run(addr string, cpAddrs []string) {
 		log.Fatalf("failed to listen on %s: %v", addr, err)
 	}
 	log.Println("Node running at", addr, "head:", isHead, "tail:", isTail)
-	/*
-		go func() {
-			ticker := time.NewTicker(2 * time.Second)
-			defer ticker.Stop()
-
-			for range ticker.C {
-				srv.printAll()
-			}
-		}()*/
 	grpcServer.Serve(lis)
 }
 

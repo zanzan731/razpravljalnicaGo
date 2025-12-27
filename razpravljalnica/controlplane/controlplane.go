@@ -297,6 +297,10 @@ func (s *fsmSnapshot) Release() {}
 // client bo lohk od control planea zahteval naslov glave in repa (kliče v intervalih
 // ali kadar je kak error)
 func Run(grpcAddr string, raftAddr string, nodeID string, bootstrap bool, leaderGrpcAddr string) {
+	//meni tko lepsi krajsi commandi
+	raftAddr = "localhost:" + raftAddr
+	grpcAddr = "localhost:" + grpcAddr
+	leaderGrpcAddr = "localhost:" + leaderGrpcAddr
 	mu := &sync.RWMutex{}
 	state := &ControlPlaneState{}
 	fsm := &ControlPlaneFSM{state: state, mu: mu}
