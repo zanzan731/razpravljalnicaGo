@@ -29,7 +29,6 @@ message Message {
   int32 likes = 6;
   repeated int64 liked = 7;
   int64 ver = 8;
-  bool dirty = 9;
 }
 
 message Like {
@@ -48,6 +47,7 @@ enum OpType {
 message NodeInfo {
   string node_id = 1;
   string address = 2;
+  int64 last_heartbeat = 3;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -192,6 +192,8 @@ service ControlPlane {
   rpc RegisterNode(NodeInfo) returns (RegisterNodeResponse);
   rpc GetSubscriptionNode(SubscriptionNodeRequest) returns (SubscriptionNodeResponse);
   rpc Heartbeat(NodeInfo) returns (google.protobuf.Empty);
+  rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
+  rpc GetLeaderAddr(google.protobuf.Empty) returns (LeaderAddressResponse);
 }
 message ChainNode {
   NodeInfo info = 1;
@@ -203,4 +205,17 @@ message GetClusterStateResponse {
   NodeInfo head = 1;
   NodeInfo tail = 2;
   repeated ChainNode chain = 3;
+}
+
+message JoinClusterRequest {
+  string node_id = 1;
+  string raft_addr = 2;
+}
+
+message JoinClusterResponse {
+  string leader_grpc_addr = 1; // empty if success
+}
+
+message LeaderAddressResponse {
+  string leader_addr = 1;
 }

@@ -4,178 +4,385 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"os"
 	pb "razpravljalnica/proto"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/hashicorp/raft"
+	raftboltdb "github.com/hashicorp/raft-boltdb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
+type ControlPlaneState struct {
+	Nodes      []*pb.NodeInfo
+	NextNodeId int64
+}
+
+// state se spreminja samo preko rafta
 type ControlPlaneServer struct {
 	pb.UnimplementedControlPlaneServer
 
-	mu sync.RWMutex
+	mu    *sync.RWMutex
+	raft  *raft.Raft
+	state *ControlPlaneState
+}
 
-	nodes      []*NodeTTL
-	nextNodeId int64
+type ControlPlaneFSM struct {
+	mu    *sync.RWMutex
+	state *ControlPlaneState
+}
+
+type CommandType string
+
+const (
+	CmdRegisterNode CommandType = "register_node"
+	CmdRemoveNode   CommandType = "remove_node"
+	CmdHeartbeat    CommandType = "heartbeat"
+)
+
+type RaftCommand struct {
+	Type CommandType
+	Node pb.NodeInfo
 }
 
 const nodeTTL = 10 * time.Second
 
-type NodeTTL struct { // node with time to live
-	node *pb.NodeInfo
-	ttl  *time.Timer
+// vrže error, če ta node ni leader
+func (c *ControlPlaneServer) ensureLeader() error {
+	if c.raft.State() != raft.Leader {
+		return fmt.Errorf("not leader")
+	}
+	return nil
 }
 
-// trenutno je control plane samo en node,
-// potem morajo še z raftom komunicirat
-
-// vozlišče se prijavi in controlPlane ga shrani
+// vozlišče(server.go) se prijavi in controlPlane ga shrani
 func (c *ControlPlaneServer) RegisterNode(ctx context.Context, node *pb.NodeInfo) (*pb.RegisterNodeResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.nextNodeId++
-	node.NodeId = strconv.FormatInt(c.nextNodeId, 10) // control plane dodeli id
-	// control plane bi lahko tudi dodelil address, lahko pa ga podamo kot parameter ko zaženemo node
-	nodet := &NodeTTL{node, time.AfterFunc(nodeTTL, func() {
-		c.removeNode(node.NodeId)
-	})}
-	c.nodes = append(c.nodes, nodet)
-	return &pb.RegisterNodeResponse{NodeId: node.NodeId}, nil
+	if err := c.ensureLeader(); err != nil {
+		return nil, err
+	}
+	// samo leader lahko registrira node, če ni leader vrne error
+
+	cmd := RaftCommand{
+		Type: CmdRegisterNode,
+		Node: *node,
+	}
+
+	data, _ := json.Marshal(cmd)
+	f := c.raft.Apply(data, 5*time.Second) // izvede command (v tem primeru register node)
+	if err := f.Error(); err != nil {
+		return nil, err
+	}
+
+	nodeId := f.Response().(string)
+	return &pb.RegisterNodeResponse{NodeId: nodeId}, nil
 }
 
 // vrne naslov trenutne glave in repa od serverja
 func (c *ControlPlaneServer) GetClusterState(ctx context.Context, _ *emptypb.Empty) (*pb.GetClusterStateResponse, error) {
-	if len(c.nodes) == 0 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if len(c.state.Nodes) == 0 {
 		return nil, fmt.Errorf("no nodes registered")
 	}
 
-	chain := make([]*pb.ChainNode, 0, len(c.nodes)) // to pomeni zcni seznam velikosti 0 ampak pre-allocate za len(c.nodes) sej lahk bi drugace ma to je lepo da lahk nucam append in da tud mu povem ej rezerviraj tolk placa da ne pole kake glupe nastanejo sicer ne bi smele ma ajde
-	//go ma tko lepo clean sintaxo love go <3
-	for i, n := range c.nodes {
-		cn := &pb.ChainNode{Info: n.node}
-		// prvi ne ma za druge mu dodaj prejsnjega
+	chain := make([]*pb.ChainNode, 0, len(c.state.Nodes))
+
+	for i, n := range c.state.Nodes {
+		cn := &pb.ChainNode{Info: n}
 		if i > 0 {
-			cn.Prev = c.nodes[i-1].node.Address
+			cn.Prev = c.state.Nodes[i-1].Address
 		}
-		//zadnji ne ma za druge mu dodaj naslednjega
-		if i < len(c.nodes)-1 {
-			cn.Next = c.nodes[i+1].node.Address
+		if i < len(c.state.Nodes)-1 {
+			cn.Next = c.state.Nodes[i+1].Address
 		}
 		chain = append(chain, cn)
 	}
 
 	return &pb.GetClusterStateResponse{
-		Head:  c.nodes[0].node,              //prvi head
-		Tail:  c.nodes[len(c.nodes)-1].node, //len vrne +1 ku pr c ka pac zcnes z 0 (ja sm falil na zacetku mb)
-		Chain: chain,                        //vrni tud cel chain naj majo te podatke lih vsi zarad mene security ni pomembn zaenkrat sam da dela in tega tud ne mislim popravljat iskren
+		Head:  c.state.Nodes[0],
+		Tail:  c.state.Nodes[len(c.state.Nodes)-1],
+		Chain: chain,
 	}, nil
 }
 
 // h komu bo client subscribu
 func (c *ControlPlaneServer) GetSubscriptionNode(ctx context.Context, req *pb.SubscriptionNodeRequest) (*pb.SubscriptionNodeResponse, error) {
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	//ce ni nobenga serverja se client nima kam subscribat unlucky za njega kaj cmo
-	if len(c.nodes) == 0 {
+
+	if len(c.state.Nodes) == 0 {
 		return nil, fmt.Errorf("no nodes available")
 	}
 
-	//neki da je zaenkrat da porazdelimo userje po vozliscih ce ne stejemo da se tudi odjavijo bi blo popoln tud to
-	//ubistvi bom lih tko pustu to mi je prov vsec ka vec je kompliciranje sploh za nas projekt
-	idx := int(req.UserId) % len(c.nodes)
-	node := c.nodes[idx]
-	if node == nil {
-		return nil, fmt.Errorf("Couldn't get subscription node. Try again.")
-	}
-
+	idx := int(req.UserId) % len(c.state.Nodes)
 	return &pb.SubscriptionNodeResponse{
-		SubscribeToken: "OK",      //lahk JWT pol (a se mi bo res dalo najbrz ne)
-		Node:           node.node, //dej mu tistega ka smo ga gor izbrali
+		SubscribeToken: "OK",
+		Node:           c.state.Nodes[idx],
 	}, nil
 
 }
 
-// odstrani mrtev server, da lahko preveže okoli njega
-func (c *ControlPlaneServer) removeNode(nodeId string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for i, nodet := range c.nodes {
-		if nodet.node.NodeId == nodeId {
-			if nodet.ttl != nil {
-				nodet.ttl.Stop()
-			}
-			c.nextNodeId--
-			c.nodes = append(c.nodes[:i], c.nodes[i+1:]...)
-			log.Printf("Node %s removed (TTL expired)", nodeId)
-			return nil
-		}
+func (c *ControlPlaneServer) Heartbeat(ctx context.Context, node *pb.NodeInfo) (*emptypb.Empty, error) {
+	if err := c.ensureLeader(); err != nil {
+		return nil, err
 	}
-	// node not found
-	return fmt.Errorf("node %s not found", nodeId)
+
+	cmd := RaftCommand{
+		Type: CmdHeartbeat,
+		Node: pb.NodeInfo{
+			NodeId:        node.NodeId,
+			LastHeartbeat: time.Now().UnixNano(),
+		},
+	}
+
+	data, _ := json.Marshal(cmd)
+	f := c.raft.Apply(data, 5*time.Second)
+	return &emptypb.Empty{}, f.Error()
 }
 
-func (c *ControlPlaneServer) Heartbeat(ctx context.Context, node *pb.NodeInfo) (*emptypb.Empty, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *ControlPlaneServer) startTTLLoop() {
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		for range ticker.C {
+			if c.raft.State() != raft.Leader {
+				continue
+			}
 
-	for _, nodet := range c.nodes {
-		if nodet.node.NodeId == node.NodeId {
-
-			// resetira ttl
-			if !nodet.ttl.Stop() {
-				select {
-				case <-nodet.ttl.C:
-				default:
+			c.mu.RLock()
+			nodes := append([]*pb.NodeInfo(nil), c.state.Nodes...)
+			c.mu.RUnlock()
+			now := time.Now().UnixNano()
+			for _, n := range nodes {
+				if now-n.LastHeartbeat > int64(nodeTTL) {
+					cmd := RaftCommand{
+						Type: CmdRemoveNode,
+						Node: pb.NodeInfo{NodeId: n.NodeId},
+					}
+					data, _ := json.Marshal(cmd)
+					c.raft.Apply(data, 5*time.Second)
 				}
 			}
-			nodet.ttl.Reset(nodeTTL)
-
-			return &emptypb.Empty{}, nil
 		}
-	}
-
-	return nil, fmt.Errorf("node not found")
+	}()
 }
 
-func (c *ControlPlaneServer) getNodeTTLById(nodeId string) *NodeTTL {
-	for _, n := range c.nodes {
-		if n.node.NodeId == nodeId {
-			return n
+func (c *ControlPlaneServer) JoinCluster(ctx context.Context, req *pb.JoinClusterRequest) (*pb.JoinClusterResponse, error) {
+	// če ni leader mu pošlje leaderjev naslov
+	if c.raft.State() != raft.Leader {
+		leaderRaftAddr := c.raft.Leader()
+		if leaderRaftAddr == "" {
+			return nil, fmt.Errorf("no leader elected yet")
+		}
+
+		leaderGrpcAddr := raftAddrToGrpcAddr(string(leaderRaftAddr))
+
+		return &pb.JoinClusterResponse{
+			LeaderGrpcAddr: leaderGrpcAddr,
+		}, nil
+	}
+
+	// preveri, če je že voter
+	f := c.raft.GetConfiguration()
+	if err := f.Error(); err != nil {
+		return nil, err
+	}
+
+	for _, srv := range f.Configuration().Servers {
+		if srv.ID == raft.ServerID(req.NodeId) {
+			log.Printf("Node %s already member", req.NodeId)
+			return &pb.JoinClusterResponse{}, nil
 		}
 	}
-	// če ne dobi noda, ga odstranimo
-	c.removeNode(nodeId)
+
+	// add voter
+	add := c.raft.AddVoter(
+		raft.ServerID(req.NodeId),
+		raft.ServerAddress(req.RaftAddr),
+		0,
+		10*time.Second,
+	)
+	if err := add.Error(); err != nil {
+		return nil, err
+	}
+
+	log.Printf("Raft node joined: id=%s addr=%s", req.NodeId, req.RaftAddr)
+	return &pb.JoinClusterResponse{}, nil
+}
+
+func (c *ControlPlaneServer) GetLeaderAddr(ctx context.Context, _ *emptypb.Empty) (*pb.LeaderAddressResponse, error) {
+	addr, _ := c.raft.LeaderWithID()
+	var saddr string = raftAddrToGrpcAddr(string(addr))
+	return &pb.LeaderAddressResponse{
+		LeaderAddr: string(saddr),
+	}, nil
+}
+
+func (f *ControlPlaneFSM) Apply(log *raft.Log) interface{} {
+	var cmd RaftCommand
+	if err := json.Unmarshal(log.Data, &cmd); err != nil {
+		panic(err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	switch cmd.Type {
+
+	case CmdRegisterNode:
+		f.state.NextNodeId++
+		cmd.Node.NodeId = strconv.FormatInt(f.state.NextNodeId, 10)
+		cmd.Node.LastHeartbeat = time.Now().UnixNano()
+		f.state.Nodes = append(f.state.Nodes, &cmd.Node)
+		return cmd.Node.NodeId
+
+	case CmdHeartbeat:
+		for _, n := range f.state.Nodes {
+			if n.NodeId == cmd.Node.NodeId {
+				n.LastHeartbeat = cmd.Node.LastHeartbeat
+			}
+		}
+
+	case CmdRemoveNode:
+		for i, n := range f.state.Nodes {
+			if n.NodeId == cmd.Node.NodeId {
+				f.state.Nodes = append(f.state.Nodes[:i], f.state.Nodes[i+1:]...)
+				break
+			}
+		}
+	}
+
 	return nil
 }
 
-func newServer() *ControlPlaneServer {
-	return &ControlPlaneServer{}
+func (f *ControlPlaneFSM) Snapshot() (raft.FSMSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	data, _ := json.Marshal(f.state)
+	return &fsmSnapshot{data}, nil
 }
+
+func (f *ControlPlaneFSM) Restore(rc io.ReadCloser) error {
+	defer rc.Close()
+	return json.NewDecoder(rc).Decode(f.state)
+}
+
+type fsmSnapshot struct {
+	data []byte
+}
+
+func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
+	if _, err := sink.Write(s.data); err != nil {
+		sink.Cancel()
+		return err
+	}
+	return sink.Close()
+}
+
+func (s *fsmSnapshot) Release() {}
 
 // server nodi se bodo registrirali
 // server nodi pošiljajo heartbeat de vemo de so še živi
 // client bo lohk od control planea zahteval naslov glave in repa (kliče v intervalih
 // ali kadar je kak error)
-func Run(addr string) {
-	//da dela sam lokalno da ne odpiramo portov pole se lahk zakomentira, zamenju sm ka je windows firewall tecn (z razlogom ma komu se da)
-	addr = "localhost:" + addr
-	///////////////////////
-	lis, err := net.Listen("tcp", addr)
-	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
-	}
-	grpcServer := grpc.NewServer()
-	pb.RegisterControlPlaneServer(grpcServer, newServer())
+func Run(grpcAddr string, raftAddr string, nodeID string, bootstrap bool, leaderGrpcAddr string) {
+	mu := &sync.RWMutex{}
+	state := &ControlPlaneState{}
+	fsm := &ControlPlaneFSM{state: state, mu: mu}
 
-	log.Println("ControlPlane listening on :6000")
-	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("failed to serve: %v", err)
+	config := raft.DefaultConfig()
+	config.LocalID = raft.ServerID(nodeID)
+
+	logStore, _ := raftboltdb.NewBoltStore(fmt.Sprintf("raft-%s-log.bolt", nodeID))
+	stableStore, _ := raftboltdb.NewBoltStore(fmt.Sprintf("raft-%s-stable.bolt", nodeID))
+	snapStore, _ := raft.NewFileSnapshotStore(fmt.Sprintf("snapshots-%s", nodeID), 1, os.Stdout)
+
+	transport, _ := raft.NewTCPTransport(raftAddr, nil, 3, 10*time.Second, os.Stdout)
+
+	hasState, err := raft.HasExistingState(logStore, stableStore, snapStore)
+	if err != nil {
+		log.Fatal(err)
 	}
+	r, err := raft.NewRaft(config, fsm, logStore, stableStore, snapStore, transport)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// bootstrap mora biti točno eden in ta je prvi leader
+	if bootstrap && !hasState { // hasState preveri, če je server vmes padu in se spret konenkta, kar bi pokvarlo podatke
+		r.BootstrapCluster(raft.Configuration{
+			Servers: []raft.Server{{
+				ID:      config.LocalID,
+				Address: transport.LocalAddr(),
+			}},
+		})
+	}
+	if !bootstrap && !hasState {
+		go JoinRaftCluster(leaderGrpcAddr, nodeID, raftAddr)
+	}
+
+	server := &ControlPlaneServer{
+		raft:  r,
+		state: state,
+		mu:    mu,
+	}
+	server.startTTLLoop()
+	lis, _ := net.Listen("tcp", grpcAddr)
+	grpcServer := grpc.NewServer()
+	pb.RegisterControlPlaneServer(grpcServer, server)
+
+	log.Println("ControlPlane listening on", grpcAddr)
+	grpcServer.Serve(lis)
+}
+
+func JoinRaftCluster(initialGrpcAddr string, nodeID string, raftAddr string) error {
+	// to pokličejo tisti nodi, ki niso bootstrap, da se joinajo leaderju
+	target := initialGrpcAddr
+	for {
+		conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return err
+		}
+
+		client := pb.NewControlPlaneClient(conn)
+		resp, err := client.JoinCluster(context.Background(), &pb.JoinClusterRequest{
+			NodeId:   nodeID,
+			RaftAddr: raftAddr,
+		})
+
+		conn.Close()
+		// ponavljamo, dokler se nam ne rata joinat
+		if err != nil {
+			log.Println("Join failed, retrying:", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		// "" pomeni, da še ni leaderja, torej se ne poskušamo več joinat
+		if resp.LeaderGrpcAddr == "" {
+			log.Println("Successfully joined Raft cluster")
+			return nil
+		}
+
+		log.Println("Redirected to leader:", resp.LeaderGrpcAddr)
+		target = resp.LeaderGrpcAddr
+	}
+}
+
+func raftAddrToGrpcAddr(raftAddr string) string {
+	host, port, _ := net.SplitHostPort(raftAddr)
+	p, _ := strconv.Atoi(port)
+	// za zdaj ja grpc address ravno raft address-1000 (bi blo fajn mal spremenit)
+	return fmt.Sprintf("%s:%d", host, p-1000)
 }

@@ -48,9 +48,31 @@ type UI struct {
 	Tail pb.MessageBoardClient
 }
 
-func Run(controlPlaneAddr string) {
+func getCPAddr(cpAddrs *[]string) string {
+	for { // ponavlja dokler ne dobi leaderja
+		for _, addr := range *cpAddrs {
+			cpConn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil { // poskusimo drugi naslov
+				cpConn.Close()
+				continue
+			}
+			cp := pb.NewControlPlaneClient(cpConn)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			res, err := cp.GetLeaderAddr(ctx, &emptypb.Empty{})
+			if res.LeaderAddr != "" { // found leader
+				cancel()
+				return res.LeaderAddr
+			}
+			cancel()
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func Run(cpAddrs *[]string) {
 	// Dubi head in tail iz control plane
-	controlPlaneAddr = "localhost:" + controlPlaneAddr
+	var controlPlaneAddr string = getCPAddr(cpAddrs)
+	//controlPlaneAddr = "localhost:" + controlPlaneAddr
 	cpConn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatal("control-plane connection failed:", err)

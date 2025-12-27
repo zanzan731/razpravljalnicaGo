@@ -1,8 +1,9 @@
 Zaradi CLI cobre lahko vse zaganjas znotraj razpravljalnice, torej cd razpravljalnica pole pa napises commande:
 
+za control-plane poglej spodaj kako se zaganja
 go run . control-plane (additonal flag --addr (default 6000))
-go run . server  (additional flags --addr (default 50051) --control-plane (default 6000))
-go run . client (additonal flags --control-plane (default 6000))
+go run . server  (additional flags --addr (default 50051))
+go run . client
 
 ce zelis dodaten flag ga dodaj v cmd datoteko in pole v datoteki s kodo dodas znotraj Run se ta flag in mas, pisi mi ce bos nucu nrdim 123 to
 
@@ -15,3 +16,12 @@ potem lahko zazenes z
 ./razpravljalnica.exe server
 ./razpravljalnica.exe client
 (flagi so vsi isto kot zgoraj, zaenkrat je vse localhost ce bo za zamenjat ali ce gre kdaj v kako produkcijo kar ne bo je to za spremenit sam na zacetku vsake Run funkcije kjer lepim string z navadnim "localhost:" + addr je delal in pac ce ne rabim fmt zakaj pa ne)
+
+obvezno addr = raft-1000 !!! kr sm tku napisu v controlplane.go raftAddrToGrpcAddr
+tu je mal drgači "--bs" pomeni true in "--bs=false" je false
+lohk jih poženeš kolkr hočeš (ponavadi 3 al 5):
+go run . control-plane --addr localhost:6000 --raft localhost:7000 --id 1 --bs --leader localhost:6000
+go run . control-plane --addr localhost:6001 --raft localhost:7001 --id 2 --bs=false --leader localhost:6000
+go run . control-plane --addr localhost:6002 --raft localhost:7002 --id 3 --bs=false --leader localhost:6000
+go run . control-plane --addr localhost:6003 --raft localhost:7003 --id 4 --bs=false --leader localhost:6000
+go run . control-plane --addr localhost:6004 --raft localhost:7004 --id 5 --bs=false --leader localhost:6000

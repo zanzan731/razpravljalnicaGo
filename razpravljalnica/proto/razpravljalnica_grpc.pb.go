@@ -8,7 +8,6 @@ package razpravljalnica
 
 import (
 	context "context"
-
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -536,6 +535,8 @@ const (
 	ControlPlane_RegisterNode_FullMethodName        = "/razpravljalnica.ControlPlane/RegisterNode"
 	ControlPlane_GetSubscriptionNode_FullMethodName = "/razpravljalnica.ControlPlane/GetSubscriptionNode"
 	ControlPlane_Heartbeat_FullMethodName           = "/razpravljalnica.ControlPlane/Heartbeat"
+	ControlPlane_JoinCluster_FullMethodName         = "/razpravljalnica.ControlPlane/JoinCluster"
+	ControlPlane_GetLeaderAddr_FullMethodName       = "/razpravljalnica.ControlPlane/GetLeaderAddr"
 )
 
 // ControlPlaneClient is the client API for ControlPlane service.
@@ -548,6 +549,8 @@ type ControlPlaneClient interface {
 	RegisterNode(ctx context.Context, in *NodeInfo, opts ...grpc.CallOption) (*RegisterNodeResponse, error)
 	GetSubscriptionNode(ctx context.Context, in *SubscriptionNodeRequest, opts ...grpc.CallOption) (*SubscriptionNodeResponse, error)
 	Heartbeat(ctx context.Context, in *NodeInfo, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	JoinCluster(ctx context.Context, in *JoinClusterRequest, opts ...grpc.CallOption) (*JoinClusterResponse, error)
+	GetLeaderAddr(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*LeaderAddressResponse, error)
 }
 
 type controlPlaneClient struct {
@@ -598,6 +601,26 @@ func (c *controlPlaneClient) Heartbeat(ctx context.Context, in *NodeInfo, opts .
 	return out, nil
 }
 
+func (c *controlPlaneClient) JoinCluster(ctx context.Context, in *JoinClusterRequest, opts ...grpc.CallOption) (*JoinClusterResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(JoinClusterResponse)
+	err := c.cc.Invoke(ctx, ControlPlane_JoinCluster_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlPlaneClient) GetLeaderAddr(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*LeaderAddressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LeaderAddressResponse)
+	err := c.cc.Invoke(ctx, ControlPlane_GetLeaderAddr_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ControlPlaneServer is the server API for ControlPlane service.
 // All implementations must embed UnimplementedControlPlaneServer
 // for forward compatibility.
@@ -608,6 +631,8 @@ type ControlPlaneServer interface {
 	RegisterNode(context.Context, *NodeInfo) (*RegisterNodeResponse, error)
 	GetSubscriptionNode(context.Context, *SubscriptionNodeRequest) (*SubscriptionNodeResponse, error)
 	Heartbeat(context.Context, *NodeInfo) (*emptypb.Empty, error)
+	JoinCluster(context.Context, *JoinClusterRequest) (*JoinClusterResponse, error)
+	GetLeaderAddr(context.Context, *emptypb.Empty) (*LeaderAddressResponse, error)
 	mustEmbedUnimplementedControlPlaneServer()
 }
 
@@ -629,6 +654,12 @@ func (UnimplementedControlPlaneServer) GetSubscriptionNode(context.Context, *Sub
 }
 func (UnimplementedControlPlaneServer) Heartbeat(context.Context, *NodeInfo) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Heartbeat not implemented")
+}
+func (UnimplementedControlPlaneServer) JoinCluster(context.Context, *JoinClusterRequest) (*JoinClusterResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method JoinCluster not implemented")
+}
+func (UnimplementedControlPlaneServer) GetLeaderAddr(context.Context, *emptypb.Empty) (*LeaderAddressResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetLeaderAddr not implemented")
 }
 func (UnimplementedControlPlaneServer) mustEmbedUnimplementedControlPlaneServer() {}
 func (UnimplementedControlPlaneServer) testEmbeddedByValue()                      {}
@@ -723,6 +754,42 @@ func _ControlPlane_Heartbeat_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlPlane_JoinCluster_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(JoinClusterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlPlaneServer).JoinCluster(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlPlane_JoinCluster_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlPlaneServer).JoinCluster(ctx, req.(*JoinClusterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ControlPlane_GetLeaderAddr_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlPlaneServer).GetLeaderAddr(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlPlane_GetLeaderAddr_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlPlaneServer).GetLeaderAddr(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ControlPlane_ServiceDesc is the grpc.ServiceDesc for ControlPlane service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -745,6 +812,14 @@ var ControlPlane_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Heartbeat",
 			Handler:    _ControlPlane_Heartbeat_Handler,
+		},
+		{
+			MethodName: "JoinCluster",
+			Handler:    _ControlPlane_JoinCluster_Handler,
+		},
+		{
+			MethodName: "GetLeaderAddr",
+			Handler:    _ControlPlane_GetLeaderAddr_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

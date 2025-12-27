@@ -65,6 +65,27 @@ ne rabimo vec narejeno na control plane --zbrisi naslednjic ce vse dela ce ne pu
 		}
 	}
 */
+func getCPAddr(cpAddrs *[]string) string {
+	for { // ponavlja dokler ne dobi leaderja
+		for _, addr := range *cpAddrs {
+			cpConn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil { // poskusimo drugi naslov
+				cpConn.Close()
+				continue
+			}
+			cp := pb.NewControlPlaneClient(cpConn)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			res, err := cp.GetLeaderAddr(ctx, &emptypb.Empty{})
+			if res.LeaderAddr != "" { // found leader
+				cancel()
+				return res.LeaderAddr
+			}
+			cancel()
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
 func (s *messageBoardServer) printAll() {
 	fmt.Println("Users: ")
 	for _, u := range s.users {
@@ -288,7 +309,6 @@ func (s *messageBoardServer) applyPostMessage(req *pb.PostMessageRequest) (*pb.M
 		Likes:     0,
 		Liked:     []int64{},
 		Ver:       0,
-		Dirty:     true,
 	}
 	s.messages[req.TopicId] = append(s.messages[req.TopicId], message)
 
@@ -626,10 +646,11 @@ func (s *messageBoardServer) GetSyncStream(req *pb.GetSyncStreamRequest, stream 
 }
 
 // addr == myAddr
-func Run(addr, controlPlaneAddr string) {
+func Run(addr string, cpAddrs *[]string) {
+	var controlPlaneAddr string = getCPAddr(cpAddrs)
 	//zato da windows ni tecn in da lazje klices
 	addr = "localhost:" + addr
-	controlPlaneAddr = "localhost:" + controlPlaneAddr
+	//controlPlaneAddr = "localhost:" + controlPlaneAddr
 	//////////////////////////////////////
 	node := &pb.NodeInfo{
 		Address: addr,
