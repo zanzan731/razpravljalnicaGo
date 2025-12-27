@@ -43,11 +43,117 @@ type UI struct {
 	MessageInput             *tview.InputField
 	NotificationBar          *tview.TextView
 
-	CP   pb.ControlPlaneClient
-	Head pb.MessageBoardClient
-	Tail pb.MessageBoardClient
+	CP       pb.ControlPlaneClient
+	CPConn   *grpc.ClientConn
+	CPAddrs  *[]string
+	Head     pb.MessageBoardClient
+	Tail     pb.MessageBoardClient
+	HeadConn *grpc.ClientConn
+	TailConn *grpc.ClientConn
 
-	cpAddrs *[]string
+	// Cached list of all server addresses from control plane (chain)
+	ServerAddrs []string
+}
+
+// reconnectHeadTail refreshes head/tail clients after a node failure.
+func (ui *UI) reconnectHeadTail() {
+	// Rediscover control plane leader first
+	newCPAddr := getCPAddr(ui.CPAddrs)
+	newCPConn, err := grpc.NewClient(newCPAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		//log.Printf("Failed to reconnect to control plane: %v", err)
+		return
+	}
+	if ui.CPConn != nil {
+		ui.CPConn.Close()
+	}
+	ui.CPConn = newCPConn
+	ui.CP = pb.NewControlPlaneClient(newCPConn)
+
+	// Now get fresh head/tail from updated control plane (non-fatal)
+	headConn, tailConn, connErr := getHeadTailConn(ui.CP)
+	if connErr != nil {
+		ui.App.QueueUpdateDraw(func() {
+			ui.NotificationBar.SetText("[red]Failed to refresh head/tail endpoints; keeping current")
+		})
+		//log.Printf("Failed to refresh head/tail: %v", connErr)
+		return
+	}
+
+	if ui.HeadConn != nil && ui.HeadConn != headConn {
+		ui.HeadConn.Close()
+	}
+	if ui.TailConn != nil && ui.TailConn != tailConn && ui.TailConn != ui.HeadConn {
+		ui.TailConn.Close()
+	}
+
+	ui.HeadConn = headConn
+	ui.TailConn = tailConn
+	ui.Head = pb.NewMessageBoardClient(headConn)
+	ui.Tail = pb.NewMessageBoardClient(tailConn)
+
+	// Refresh local cache of all server endpoints
+	ui.refreshClusterCache()
+	//log.Printf("Reconnected: head=%s tail=%s", headConn.Target(), tailConn.Target())
+}
+
+// refreshClusterCache fetches the full chain from control-plane and caches all node addresses
+func (ui *UI) refreshClusterCache() {
+	if ui.CP == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	state, err := ui.CP.GetClusterState(ctx, &emptypb.Empty{})
+	cancel()
+	if err != nil || state == nil {
+		return
+	}
+	addrs := make([]string, 0, len(state.Chain))
+	for _, cn := range state.Chain {
+		if cn.GetInfo() != nil {
+			addr := cn.GetInfo().GetAddress()
+			if addr != "" {
+				addrs = append(addrs, addr)
+			}
+		}
+	}
+	ui.ServerAddrs = addrs
+}
+
+// Subscribe samo ne dela sm si dal seznam vseh serverjov in pac naj prova skoz vse kdor mu odgovori mu pac odgovori ce noben unlucky
+func (ui *UI) trySubscribeOnAnyNode(topicID int64, userID int64, token string, preferAddr string) (pb.MessageBoard_SubscribeTopicClient, *grpc.ClientConn, error) {
+	// ce ni serverjev smo pac cooked
+	if len(ui.ServerAddrs) == 0 {
+		ui.refreshClusterCache()
+	}
+	candidates := make([]string, 0, len(ui.ServerAddrs)+1)
+	if preferAddr != "" {
+		candidates = append(candidates, preferAddr)
+	}
+	for _, a := range ui.ServerAddrs {
+		if a == preferAddr {
+			continue
+		}
+		candidates = append(candidates, a)
+	}
+
+	for _, addr := range candidates {
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			continue
+		}
+		client := pb.NewMessageBoardClient(conn)
+		stream, sErr := client.SubscribeTopic(context.Background(), &pb.SubscribeTopicRequest{
+			TopicId:        []int64{topicID},
+			UserId:         userID,
+			SubscribeToken: token,
+		})
+		if sErr == nil {
+			return stream, conn, nil
+		}
+		conn.Close()
+	}
+	return nil, nil, fmt.Errorf("no available node for subscription")
 }
 
 func getCPAddr(cpAddrs *[]string) string {
@@ -61,11 +167,10 @@ func getCPAddr(cpAddrs *[]string) string {
 			cp := pb.NewControlPlaneClient(cpConn)
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			res, err := cp.GetLeaderAddr(ctx, &emptypb.Empty{})
-			if res.LeaderAddr != "" { // found leader
-				cancel()
+			cancel()
+			if err == nil && res != nil && res.LeaderAddr != "" { // found leader
 				return res.LeaderAddr
 			}
-			cancel()
 		}
 		time.Sleep(1 * time.Second)
 	}
@@ -84,7 +189,10 @@ func Run(cpAddrs *[]string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 
-	headConn, tailConn := getHeadTailConn(&cp, ctx, cancel, cpAddrs)
+	headConn, tailConn, connErr := getHeadTailConn(cp)
+	if connErr != nil {
+		log.Fatal("failed to get cluster state:", connErr)
+	}
 	headClient := pb.NewMessageBoardClient(headConn)
 	tailClient := pb.NewMessageBoardClient(tailConn)
 
@@ -120,7 +228,7 @@ func Run(cpAddrs *[]string) {
 	fmt.Println("Logged in as user: ", user.Name, "ID: ", user.Id)
 
 	//Interactive Shell -- po novem rabi vse podatke o tem komu posiljat kaj... treba cekirat tud na serverju vse da se na pravih krajih bere in pise
-	runShell(cp, headClient, tailClient, user.Id)
+	runShell(cp, cpConn, cpAddrs, headClient, headConn, tailClient, tailConn, user.Id)
 	//zpri se head in tail connection
 	headConn.Close()
 	//spomni se od prej lahk sta ista ne mores zprt ze zaprte povezave
@@ -129,73 +237,103 @@ func Run(cpAddrs *[]string) {
 	}
 }
 
-func getHeadTailConn(cpref *pb.ControlPlaneClient, ctx context.Context, cancel context.CancelFunc, cpAddrs *[]string) (*grpc.ClientConn, *grpc.ClientConn) {
-	cp := *cpref
-	var state *pb.GetClusterStateResponse
-	for {
-		var err error
-		state, err = cp.GetClusterState(ctx, &emptypb.Empty{}) //head tail in chain
-		cancel()
-		if err == nil {
-			break
-		} else {
-			//log.Fatal("failed to get cluster state:", err) //neki sfukan state na control plane
-			var controlPlaneAddr string = getCPAddr(cpAddrs)
-			cpConn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			if err != nil {
-				log.Fatal("control-plane connection failed:", err)
-			}
-			defer cpConn.Close() //da zpre conection predn se konca na koncu bi pozabu drgace, zdej a je defer slabsi ku ce napisem na koncu upam da to compiler pole prov nrdi ka jaz necem razmisljat o tem
-			cp = pb.NewControlPlaneClient(cpConn)
-			cpref = &cp
-			continue
-		}
+// UI reconection mal je pomagu catko ka moj je sam crashnu clienta ne bomo niti idk zakaj
+func getHeadTailConn(cp pb.ControlPlaneClient) (*grpc.ClientConn, *grpc.ClientConn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	state, err := cp.GetClusterState(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, nil, err
 	}
-	headAddr := state.GetHead().GetAddress() //kje je head
-	tailAddr := state.GetTail().GetAddress() //kje je tail
-	//////////////////////////////////// CONNECTION TO HEAD /////////////////////////////////////////////////////////////////
+	headAddr := state.GetHead().GetAddress()
+	tailAddr := state.GetTail().GetAddress()
+
 	headConn, err := grpc.NewClient(headAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatal("head connection failed:", err)
+		return nil, nil, fmt.Errorf("head connection failed: %w", err)
 	}
-	//////////////////////////////////// CONNECTION TO TAIL /////////////////////////////////////////////////////////////////
 	var tailConn *grpc.ClientConn
-	///////////sam en server ne se dvakrat povezovat na isti port ka bos nrdu lahk sam probleme sploh ce ni pravih checkov....
 	if tailAddr == headAddr {
 		tailConn = headConn
 	} else {
-		//connect to tail
 		tailConn, err = grpc.NewClient(tailAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
 			headConn.Close()
-			log.Fatal("tail connection failed:", err)
+			return nil, nil, fmt.Errorf("tail connection failed: %w", err)
 		}
 	}
-	//pole vrzi vn zaenkrat pusti da vidis kam si connectan
-	fmt.Printf("Connected. head=%s tail=%s\n", headAddr, tailAddr)
-	return headConn, tailConn
+	return headConn, tailConn, nil
 }
 
-func runShell(cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.MessageBoardClient, userID int64) {
+// this function has 8 parameters which is more than 7 advised ---who cares sam pusti me namiru dobesedno je to centralni del kode dej mir
+func runShell(cp pb.ControlPlaneClient, cpConn *grpc.ClientConn, cpAddrs *[]string, head pb.MessageBoardClient, headConn *grpc.ClientConn, tail pb.MessageBoardClient, tailConn *grpc.ClientConn, userID int64) {
 	app := tview.NewApplication()
-	_ = NewUI(app, cp, head, tail, userID)
+	_ = NewUI(app, cp, cpConn, cpAddrs, head, headConn, tail, tailConn, userID)
 	if err := app.Run(); err != nil {
 		panic(err)
 	}
 }
 
-func (ui *UI) subscribeLoop(cp pb.ControlPlaneClient, topicID int64, userID int64) {
+func (ui *UI) subscribeLoop(topicID int64, userID int64) {
 	ui.SubscriptionView.Clear()
 	ui.App.QueueUpdateDraw(func() {
 		ui.SubscriptionView.AddItem(fmt.Sprintf("[yellow]Subscribing to topic %d...\n", topicID), "", 0, nil)
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	resp, err := cp.GetSubscriptionNode(ctx, &pb.SubscriptionNodeRequest{UserId: userID, TopicId: []int64{topicID}})
-	cancel()
+	// prvo cekiri control plane
+	if ui.CP == nil || ui.CPConn == nil {
+		ui.App.QueueUpdateDraw(func() {
+			ui.NotificationBar.SetText("[yellow]Control-plane unavailable, rediscovering...")
+		})
+		ui.reconnectHeadTail()
+		if ui.CP == nil || ui.CPConn == nil {
+			ui.App.QueueUpdateDraw(func() {
+				ui.NotificationBar.SetText("[red]Failed to reconnect to control-plane")
+			})
+			return
+		}
+	}
+
+	// provi sub node cene pac
+	var resp *pb.SubscriptionNodeResponse
+	var err error
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		resp, err = ui.CP.GetSubscriptionNode(ctx, &pb.SubscriptionNodeRequest{UserId: userID, TopicId: []int64{topicID}})
+		cancel()
+		if err == nil {
+			break
+		}
+		if status.Code(err) == codes.Unavailable {
+			ui.App.QueueUpdateDraw(func() {
+				ui.NotificationBar.SetText("[yellow]Control-plane unavailable, rediscovering...")
+			})
+			ui.reconnectHeadTail()
+			if ui.CP == nil || ui.CPConn == nil {
+				ui.App.QueueUpdateDraw(func() {
+					ui.NotificationBar.SetText("[red]Failed to reconnect to control-plane")
+				})
+				return
+			}
+		} else {
+			ui.App.QueueUpdateDraw(func() {
+				ui.NotificationBar.SetText("[red]Subscription node lookup failed")
+			})
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	if err != nil {
 		ui.App.QueueUpdateDraw(func() {
-			ui.SubscriptionView.AddItem(fmt.Sprintln("[red]Subscription node lookup failed:", err), "", 0, nil)
+			ui.NotificationBar.SetText("[red]Failed to get subscription node after retries")
+		})
+		return
+	}
+
+	if resp == nil || resp.GetNode() == nil {
+		ui.App.QueueUpdateDraw(func() {
+			ui.NotificationBar.SetText("[red]Subscription node response invalid")
 		})
 		return
 	}
@@ -208,7 +346,7 @@ func (ui *UI) subscribeLoop(cp pb.ControlPlaneClient, topicID int64, userID int6
 	subConn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		ui.App.QueueUpdateDraw(func() {
-			ui.SubscriptionView.AddItem(fmt.Sprintln("[red]Connect to subscription node failed:", err), "", 0, nil)
+			ui.NotificationBar.SetText("[red]Connect to subscription node failed")
 		})
 		return
 	}
@@ -221,21 +359,51 @@ func (ui *UI) subscribeLoop(cp pb.ControlPlaneClient, topicID int64, userID int6
 		SubscribeToken: resp.GetSubscribeToken(),
 	})
 	if err != nil {
-		ui.App.QueueUpdateDraw(func() {
-			ui.SubscriptionView.AddItem(fmt.Sprintf("[red]Subscribe failed: %v", err), "", 0, nil)
-		})
-		return
+		// First, try any cached node with the current token
+		subConn.Close()
+		streamAny, connAny, anyErr := ui.trySubscribeOnAnyNode(topicID, userID, resp.GetSubscribeToken(), addr)
+		if anyErr == nil {
+			stream = streamAny
+			subConn = connAny
+		} else {
+			// If that fails, reconnect control-plane, re-fetch token, then try any node again
+			ui.App.QueueUpdateDraw(func() {
+				ui.NotificationBar.SetText("[yellow]Subscription node unavailable; refreshing cluster and token...")
+			})
+			ui.reconnectHeadTail()
+			// Re-fetch token
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			newResp, err2 := ui.CP.GetSubscriptionNode(ctx, &pb.SubscriptionNodeRequest{UserId: userID, TopicId: []int64{topicID}})
+			cancel()
+			if err2 != nil || newResp == nil {
+				ui.App.QueueUpdateDraw(func() {
+					ui.NotificationBar.SetText("[red]Failed to get new subscription token")
+				})
+				return
+			}
+			resp = newResp
+			streamAny2, connAny2, anyErr2 := ui.trySubscribeOnAnyNode(topicID, userID, resp.GetSubscribeToken(), resp.GetNode().GetAddress())
+			if anyErr2 != nil {
+				ui.App.QueueUpdateDraw(func() {
+					ui.NotificationBar.SetText("[red]Failed to subscribe after scanning all nodes")
+				})
+				return
+			}
+			stream = streamAny2
+			subConn = connAny2
+		}
 	}
+
 	ui.App.QueueUpdateDraw(func() {
 		ui.SubscriptionView.AddItem(fmt.Sprintf("[green]Subscribed to topic %d", topicID), "", 0, nil)
 		ui.NotificationBar.SetText(fmt.Sprintf("[green]Subscribed to topic %d - Waiting for new messages...", topicID))
 		ui.Pages.SwitchToPage("menu")
 		ui.App.SetFocus(ui.Menu)
 	})
+
+	// Listen for messages; if stream fails, attempt to reconnect
 	for {
-		//Recv() sprejme naslednji response from server
 		event, err := stream.Recv()
-		//EOF se poslje na koncu ko se streem terminata
 		if err == io.EOF {
 			ui.App.QueueUpdateDraw(func() {
 				ui.NotificationBar.SetText(fmt.Sprintf("[yellow]Stream closed for topic %d", topicID))
@@ -243,9 +411,21 @@ func (ui *UI) subscribeLoop(cp pb.ControlPlaneClient, topicID int64, userID int6
 			return
 		}
 		if err != nil {
+			// Stream error: try reconnecting and resubscribing
+			if status.Code(err) == codes.Unavailable {
+				ui.App.QueueUpdateDraw(func() {
+					ui.NotificationBar.SetText("[yellow]Subscription node lost, reconnecting...")
+				})
+				subConn.Close()
+				// Recursive call to retry subscription
+				go ui.subscribeLoop(topicID, userID)
+				return
+			}
 			ui.App.QueueUpdateDraw(func() {
-				ui.NotificationBar.SetText(fmt.Sprintf("[red]Stream error: %v", err))
+				ui.NotificationBar.SetText("[red]Stream error - node disconnected, retrying subscription...")
 			})
+			subConn.Close()
+			go ui.subscribeLoop(topicID, userID)
 			return
 		}
 		ui.App.QueueUpdateDraw(func() {
@@ -254,16 +434,20 @@ func (ui *UI) subscribeLoop(cp pb.ControlPlaneClient, topicID int64, userID int6
 	}
 }
 
-//////////////////////////////////////////////////////////////////// UI ///////////////////////////////////////////////////////////
-
-func NewUI(app *tview.Application, cp pb.ControlPlaneClient, head pb.MessageBoardClient, tail pb.MessageBoardClient, userId int64) *UI {
+// ////////////////////////////////////////////////////////////////// UI ///////////////////////////////////////////////////////////
+// This function has 9 parameters, which is greater than the 7 authorized. ---ne bom vec komentiral
+func NewUI(app *tview.Application, cp pb.ControlPlaneClient, cpConn *grpc.ClientConn, cpAddrs *[]string, head pb.MessageBoardClient, headConn *grpc.ClientConn, tail pb.MessageBoardClient, tailConn *grpc.ClientConn, userId int64) *UI {
 	ui := &UI{
-		App:    app,
-		Pages:  tview.NewPages(),
-		CP:     cp,
-		Head:   head,
-		Tail:   tail,
-		UserId: userId,
+		App:      app,
+		Pages:    tview.NewPages(),
+		CP:       cp,
+		CPConn:   cpConn,
+		CPAddrs:  cpAddrs,
+		Head:     head,
+		HeadConn: headConn,
+		Tail:     tail,
+		TailConn: tailConn,
+		UserId:   userId,
 	}
 
 	ui.NotificationBar = tview.NewTextView().
@@ -286,7 +470,7 @@ func NewUI(app *tview.Application, cp pb.ControlPlaneClient, head pb.MessageBoar
 
 	mainLayout := tview.NewFlex().
 		SetDirection(tview.FlexRow).
-		AddItem(ui.Pages, 0, 7, true).
+		AddItem(ui.Pages, 0, 3, true).
 		AddItem(ui.NotificationBar, 0, 1, false)
 
 	ui.Pages.AddPage("menu", ui.Menu, true, true)
@@ -445,6 +629,7 @@ func (ui *UI) buildNewTopicPage() {
 		AddButton("Create", func() {
 			topicName := topicInput.GetText()
 			if topicName == "" {
+				ui.NotificationBar.SetText("[red]You can't put an empty string for topic name")
 				ui.Pages.SwitchToPage("menu")
 				ui.App.SetFocus(ui.Menu)
 				return
@@ -557,24 +742,25 @@ func (ui *UI) topics() {
 		resp, err := ui.Tail.ListTopics(ctx, &emptypb.Empty{}) //klici tail za podatke -- reads tail! (sprememba iz prej ka je bil c. ka je itak bil sam en client)
 		cancel()
 		ui.App.QueueUpdateDraw(func() {
-			ui.TopicsView.Clear()
 			if status.Code(err) == codes.Unavailable {
-				// če server ni dosegljiv
-				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(&ui.CP, context.Background(), cancel, ui.cpAddrs) // zamenjaj context, za test context.Background()
-				ui.Head = pb.NewMessageBoardClient(headConn)
-				ui.Tail = pb.NewMessageBoardClient(tailConn)
-				ui.TopicsView.AddItem("Failed to load. Reconnected. Try again.", "", 0, nil)
+				ui.reconnectHeadTail()
+				if ui.Head == nil || ui.Tail == nil {
+					ui.NotificationBar.SetText("[red]Failed to refresh endpoints; please try again")
+					return
+				}
+				ui.NotificationBar.SetText("[green]Reconnected. Try again.")
 				return
 			}
 			if err != nil {
-				ui.TopicsView.AddItem(fmt.Sprintf("Error: %v", err), "", 0, nil)
+				ui.NotificationBar.SetText("[red]Error loading topics")
 				return
 			}
 			if len(resp.Topics) == 0 {
+				ui.TopicsView.Clear()
 				ui.TopicsView.AddItem("There are no open topics yet!", "", 0, nil)
 				return
 			}
+			ui.TopicsView.Clear()
 			for _, t := range resp.Topics {
 				topic := t
 				ui.TopicsView.AddItem(
@@ -604,20 +790,20 @@ func (ui *UI) showMessages(topicID int64, name string) {
 		messages, err := ui.Tail.GetMessages(ctx, &pb.GetMessagesRequest{TopicId: topicID}) //list all messages always to tail
 		cancel()
 		ui.App.QueueUpdateDraw(func() {
-			ui.MessagesView.Clear()
 			if status.Code(err) == codes.Unavailable {
-				// če server ni dosegljiv
-				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(&ui.CP, context.Background(), cancel, ui.cpAddrs)
-				ui.Head = pb.NewMessageBoardClient(headConn)
-				ui.Tail = pb.NewMessageBoardClient(tailConn)
-				ui.MessagesView.AddItem("[red]Failed to load. Reconnected. Try again.", "", 0, nil)
+				ui.reconnectHeadTail()
+				if ui.Head == nil || ui.Tail == nil {
+					ui.NotificationBar.SetText("[red]Failed to refresh endpoints; please try again")
+					return
+				}
+				ui.NotificationBar.SetText("[green]Reconnected. Try again.")
 				return
 			}
 			if err != nil {
-				ui.MessagesView.AddItem(fmt.Sprintf("[red]Error: %v", err), "", 0, nil)
+				ui.NotificationBar.SetText("[red]Error loading messages")
 				return
 			}
+			ui.MessagesView.Clear()
 			if len(messages.Messages) == 0 {
 				ui.MessagesView.AddItem("[gray]No messages in this topic yet.", "", 0, nil)
 				return
@@ -651,20 +837,20 @@ func (ui *UI) showUpdateDeleteMessages(topicID int64, name string) {
 		messages, err := ui.Tail.GetMessages(ctx, &pb.GetMessagesRequest{TopicId: topicID}) //list all messages always to tail
 		cancel()
 		ui.App.QueueUpdateDraw(func() {
-			ui.MessagesUpdateDeleteView.Clear()
 			if status.Code(err) == codes.Unavailable {
-				// če server ni dosegljiv
-				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(&ui.CP, context.Background(), cancel, ui.cpAddrs)
-				ui.Head = pb.NewMessageBoardClient(headConn)
-				ui.Tail = pb.NewMessageBoardClient(tailConn)
-				ui.MessagesUpdateDeleteView.AddItem("[red]Failed to load. Reconnected. Try again.", "", 0, nil)
+				ui.reconnectHeadTail()
+				if ui.Head == nil || ui.Tail == nil {
+					ui.NotificationBar.SetText("[red]Failed to refresh endpoints; please try again")
+					return
+				}
+				ui.NotificationBar.SetText("[green]Reconnected. Try again.")
 				return
 			}
 			if err != nil {
-				ui.MessagesUpdateDeleteView.AddItem(fmt.Sprintf("[red]Error: %v", err), "", 0, nil)
+				ui.NotificationBar.SetText(fmt.Sprintf("[red]Error loading messages: %v", err))
 				return
 			}
+			ui.MessagesUpdateDeleteView.Clear()
 			if len(messages.Messages) == 0 {
 				ui.MessagesUpdateDeleteView.AddItem("[gray]No messages in this topic yet.", "", 0, nil)
 				return
@@ -695,24 +881,25 @@ func (ui *UI) subscription() {
 		resp, err := ui.Tail.ListTopics(ctx, &emptypb.Empty{}) //klici tail za podatke -- reads tail! (sprememba iz prej ka je bil c. ka je itak bil sam en client)
 		cancel()
 		ui.App.QueueUpdateDraw(func() {
-			ui.SubscriptionView.Clear()
 			if status.Code(err) == codes.Unavailable {
-				// če server ni dosegljiv
-				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(&ui.CP, context.Background(), cancel, ui.cpAddrs) // zamenjaj context, za test context.Background()
-				ui.Head = pb.NewMessageBoardClient(headConn)
-				ui.Tail = pb.NewMessageBoardClient(tailConn)
-				ui.SubscriptionView.AddItem("Failed to load. Reconnected. Try again.", "", 0, nil)
+				ui.reconnectHeadTail()
+				if ui.Head == nil || ui.Tail == nil {
+					ui.NotificationBar.SetText("[red]Failed to refresh endpoints; please try again")
+					return
+				}
+				ui.NotificationBar.SetText("[green]Reconnected. Try again.")
 				return
 			}
 			if err != nil {
-				ui.SubscriptionView.AddItem(fmt.Sprintf("Error: %v", err), "", 0, nil)
+				ui.NotificationBar.SetText("[red]Error loading topics")
 				return
 			}
 			if len(resp.Topics) == 0 {
+				ui.SubscriptionView.Clear()
 				ui.SubscriptionView.AddItem("There are no open topics yet!", "", 0, nil)
 				return
 			}
+			ui.SubscriptionView.Clear()
 			for _, t := range resp.Topics {
 				topic := t
 				ui.SubscriptionView.AddItem(
@@ -720,7 +907,7 @@ func (ui *UI) subscription() {
 					"",
 					0,
 					func() {
-						go ui.subscribeLoop(ui.CP, topic.Id, ui.UserId)
+						go ui.subscribeLoop(topic.Id, ui.UserId)
 					},
 				)
 			}
@@ -729,19 +916,36 @@ func (ui *UI) subscription() {
 }
 
 func (ui *UI) newtopic(name string, input *tview.InputField) {
+	// Guard against missing head connection/client
+	if ui.HeadConn == nil || ui.Head == nil {
+		ui.NotificationBar.SetText("[red]Head unavailable; try again after reconnect")
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	_, err := ui.Head.CreateTopic(ctx, &pb.CreateTopicRequest{Name: name})
 	cancel()
 
 	ui.App.QueueUpdateDraw(func() {
-		if err != nil {
-			ui.NotificationBar.SetText(fmt.Sprintf("[red]Failed to create topic: %v", err))
-		} else {
-			ui.NotificationBar.SetText(fmt.Sprintf("[green]Topic '%s' created!", name))
-			input.SetText("") // Just clear the text, not the whole form
-			ui.Pages.SwitchToPage("menu")
-			ui.App.SetFocus(ui.Menu)
+		if status.Code(err) == codes.Unavailable {
+			ui.NotificationBar.SetText("[yellow]Reconnecting to new head...")
+			ui.reconnectHeadTail()
+			// After reconnect, ensure head is ready before retrying
+			if ui.HeadConn == nil || ui.Head == nil {
+				ui.NotificationBar.SetText("[red]Head still unavailable after reconnect")
+				return
+			}
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+			_, err = ui.Head.CreateTopic(ctx2, &pb.CreateTopicRequest{Name: name})
+			cancel2()
 		}
+		if err != nil {
+			ui.NotificationBar.SetText("[red]Failed to create topic - head unavailable")
+			return
+		}
+		ui.NotificationBar.SetText(fmt.Sprintf("[green]Topic '%s' created!", name)) //buljs za njih da ne bojo ta imena 100 znakov ka sm vse drugo zbrisal za probleme za UI tko da je sam se tle
+		input.SetText("")
+		ui.Pages.SwitchToPage("menu")
+		ui.App.SetFocus(ui.Menu)
 	})
 }
 
@@ -753,22 +957,24 @@ func (ui *UI) loadSendMessageTopics() {
 		resp, err := ui.Tail.ListTopics(ctx, &emptypb.Empty{})
 		cancel()
 		ui.App.QueueUpdateDraw(func() {
-			ui.SendMessageTopicsView.Clear()
 			if status.Code(err) == codes.Unavailable {
-				headConn, tailConn := getHeadTailConn(&ui.CP, context.Background(), cancel, ui.cpAddrs)
-				ui.Head = pb.NewMessageBoardClient(headConn)
-				ui.Tail = pb.NewMessageBoardClient(tailConn)
-				ui.SendMessageTopicsView.AddItem("Failed to load. Reconnected. Try again.", "", 0, nil)
+				ui.reconnectHeadTail()
+				if ui.Head == nil || ui.Tail == nil {
+					ui.NotificationBar.SetText("[red]Failed to refresh endpoints; please try again")
+					return
+				}
+				ui.NotificationBar.SetText("[green]Reconnected. Try again.")
 				return
 			}
 			if err != nil {
-				ui.SendMessageTopicsView.AddItem(fmt.Sprintf("Error: %v", err), "", 0, nil)
+				ui.NotificationBar.SetText("[red]Error loading topics")
 				return
 			}
 			if len(resp.Topics) == 0 {
 				ui.SendMessageTopicsView.AddItem("There are no open topics yet!", "", 0, nil)
 				return
 			}
+			ui.SendMessageTopicsView.Clear()
 			for _, t := range resp.Topics {
 				topic := t
 				ui.SendMessageTopicsView.AddItem(
@@ -787,6 +993,14 @@ func (ui *UI) loadSendMessageTopics() {
 }
 
 func (ui *UI) sendMessage(messageText string, input *tview.InputField) {
+	// Prvo provi ce je topic izbran
+	if ui.SelectedTopicID == 0 {
+		ui.App.QueueUpdateDraw(func() {
+			ui.NotificationBar.SetText("[red]Select a topic first")
+		})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	_, err := ui.Head.PostMessage(ctx, &pb.PostMessageRequest{
 		TopicId: ui.SelectedTopicID,
@@ -795,15 +1009,47 @@ func (ui *UI) sendMessage(messageText string, input *tview.InputField) {
 	})
 	cancel()
 
+	// If unavailable, try to reconnect and retry (outside UI thread)
+	if status.Code(err) == codes.Unavailable {
+		ui.App.QueueUpdateDraw(func() {
+			ui.NotificationBar.SetText("[yellow]Reconnecting to new head...")
+		})
+		ui.reconnectHeadTail()
+		// Ensure head exists after reconnect
+		if ui.Head == nil || ui.HeadConn == nil {
+			ui.App.QueueUpdateDraw(func() {
+				ui.NotificationBar.SetText("[red]Head unavailable after reconnect; try again")
+			})
+			return
+		}
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+		_, err = ui.Head.PostMessage(ctx2, &pb.PostMessageRequest{
+			TopicId: ui.SelectedTopicID,
+			Text:    messageText,
+			UserId:  ui.UserId,
+		})
+		cancel2()
+	}
+
+	// UI updates based on final outcome
 	ui.App.QueueUpdateDraw(func() {
 		if err != nil {
-			ui.NotificationBar.SetText(fmt.Sprintf("[red]Failed to send message: %v", err))
-		} else {
-			ui.NotificationBar.SetText(fmt.Sprintf("[green]Message sent to topic %d!", ui.SelectedTopicID))
-			input.SetText("")
-			ui.Pages.SwitchToPage("menu")
-			ui.App.SetFocus(ui.Menu)
+			switch status.Code(err) {
+			case codes.Unavailable:
+				ui.NotificationBar.SetText("[red]Failed to send: head unavailable")
+			case codes.NotFound:
+				ui.NotificationBar.SetText("[red]Topic not found")
+			case codes.InvalidArgument:
+				ui.NotificationBar.SetText("[red]Invalid message or topic")
+			default:
+				ui.NotificationBar.SetText(fmt.Sprintf("[red]Failed to send message: %v", err))
+			}
+			return
 		}
+		ui.NotificationBar.SetText(fmt.Sprintf("[green]Message sent to topic %d!", ui.SelectedTopicID))
+		input.SetText("")
+		ui.Pages.SwitchToPage("menu")
+		ui.App.SetFocus(ui.Menu)
 	})
 }
 
@@ -817,12 +1063,34 @@ func (ui *UI) likeMessage(topicID int64, messageID int64) {
 	cancel()
 
 	ui.App.QueueUpdateDraw(func() {
-		if err != nil {
-			ui.NotificationBar.SetText(fmt.Sprintf("[red]Failed to like message: %v", err))
-		} else {
-			ui.NotificationBar.SetText(fmt.Sprintf("[green]Liked message %d!", messageID))
-			ui.showMessages(topicID, "")
+		if status.Code(err) == codes.Unavailable {
+			ui.NotificationBar.SetText("[yellow]Reconnecting to new head...")
+			ui.reconnectHeadTail()
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+			_, err = ui.Head.LikeMessage(ctx2, &pb.LikeMessageRequest{
+				TopicId:   topicID,
+				MessageId: messageID,
+				UserId:    ui.UserId,
+			})
+			cancel2()
 		}
+		if err != nil {
+			//ist ku prej za delete in update
+			if strings.Contains(err.Error(), "you can't like your own message") {
+				ui.NotificationBar.SetText("[red]You can't like your own messages")
+				return
+			}
+			if strings.Contains(err.Error(), "you already liked this message") {
+				ui.NotificationBar.SetText("[red]You already liked this message, you can only like a message once")
+				return
+			}
+			ui.NotificationBar.SetText("[red]Failed to like message - head unavailable")
+			return
+		}
+		ui.NotificationBar.SetText(fmt.Sprintf("[green]Liked message %d!", messageID))
+		ui.showMessages(topicID, "")
+		ui.Pages.SwitchToPage("menu")
+		ui.App.SetFocus(ui.Menu)
 	})
 }
 func (ui *UI) updateDeleteTopics() {
@@ -832,19 +1100,19 @@ func (ui *UI) updateDeleteTopics() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		resp, err := ui.Tail.ListTopics(ctx, &emptypb.Empty{}) //klici tail za podatke -- reads tail! (sprememba iz prej ka je bil c. ka je itak bil sam en client)
 		cancel()
+		ui.UpdateDeleteView.Clear()
 		ui.App.QueueUpdateDraw(func() {
-			ui.UpdateDeleteView.Clear()
 			if status.Code(err) == codes.Unavailable {
-				// če server ni dosegljiv
-				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(&ui.CP, context.Background(), cancel, ui.cpAddrs) // zamenjaj context, za test context.Background()
-				ui.Head = pb.NewMessageBoardClient(headConn)
-				ui.Tail = pb.NewMessageBoardClient(tailConn)
-				ui.UpdateDeleteView.AddItem("Failed to load. Reconnected. Try again.", "", 0, nil)
+				ui.reconnectHeadTail()
+				if ui.Head == nil || ui.Tail == nil {
+					ui.NotificationBar.SetText("[red]Failed to refresh endpoints; please try again")
+					return
+				}
+				ui.NotificationBar.SetText("[green]Reconnected. Try again.")
 				return
 			}
 			if err != nil {
-				ui.UpdateDeleteView.AddItem(fmt.Sprintf("Error: %v", err), "", 0, nil)
+				ui.NotificationBar.SetText(fmt.Sprintf("[red]Error loading topics: %v", err))
 				return
 			}
 			if len(resp.Topics) == 0 {
@@ -877,15 +1145,32 @@ func (ui *UI) updateMessage(topicID int64, messageID int64, messageText string) 
 	cancel()
 
 	ui.App.QueueUpdateDraw(func() {
-		if err != nil {
-			ui.NotificationBar.SetText(fmt.Sprintf("[red]Failed to update message: %v", err))
-		} else {
-			ui.NotificationBar.SetText(fmt.Sprintf("[green]Message %d updated!", messageID))
-			ui.MessageInput.SetText("")
-			ui.showMessages(topicID, "")
-			ui.Pages.SwitchToPage("menu")
-			ui.App.SetFocus(ui.Menu)
+		if status.Code(err) == codes.Unavailable {
+			ui.NotificationBar.SetText("[yellow]Reconnecting to new head...")
+			ui.reconnectHeadTail()
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+			_, err = ui.Head.UpdateMessage(ctx2, &pb.UpdateMessageRequest{
+				TopicId:   topicID,
+				MessageId: messageID,
+				Text:      messageText,
+				UserId:    ui.UserId,
+			})
+			cancel2()
 		}
+		if err != nil {
+			//zato da ves da updatas napacn message ki ni tvoj
+			if strings.Contains(err.Error(), "user is not the owner") {
+				ui.NotificationBar.SetText("[red]You can only edit your own messages")
+				return
+			}
+			ui.NotificationBar.SetText("[red]Failed to update message")
+			return
+		}
+		ui.NotificationBar.SetText(fmt.Sprintf("[green]Message %d updated!", messageID))
+		ui.MessageInput.SetText("")
+		ui.showMessages(topicID, "")
+		ui.Pages.SwitchToPage("menu")
+		ui.App.SetFocus(ui.Menu)
 	})
 }
 
@@ -899,14 +1184,29 @@ func (ui *UI) deleteMessage(topicID int64, messageID int64) {
 	cancel()
 
 	ui.App.QueueUpdateDraw(func() {
-		if err != nil {
-			ui.NotificationBar.SetText(fmt.Sprintf("[red]Failed to delete message: %v", err))
-		} else {
-			ui.NotificationBar.SetText(fmt.Sprintf("[green]Message %d deleted!", messageID))
-			ui.MessageInput.SetText("")
-			ui.showMessages(topicID, "")
-			ui.Pages.SwitchToPage("menu")
-			ui.App.SetFocus(ui.Menu)
+		if status.Code(err) == codes.Unavailable {
+			ui.NotificationBar.SetText("[yellow]Reconnecting to new head...")
+			ui.reconnectHeadTail()
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+			_, err = ui.Head.DeleteMessage(ctx2, &pb.DeleteMessageRequest{
+				TopicId:   topicID,
+				MessageId: messageID,
+				UserId:    ui.UserId,
+			})
+			cancel2()
 		}
+		if err != nil {
+			if strings.Contains(err.Error(), "user is not the owner") {
+				ui.NotificationBar.SetText("[red]You can only delete your own messages")
+				return
+			}
+			ui.NotificationBar.SetText("[red]Failed to delete message")
+			return
+		}
+		ui.NotificationBar.SetText(fmt.Sprintf("[green]Message %d deleted!", messageID))
+		ui.MessageInput.SetText("")
+		ui.showMessages(topicID, "")
+		ui.Pages.SwitchToPage("menu")
+		ui.App.SetFocus(ui.Menu)
 	})
 }
