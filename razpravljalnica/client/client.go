@@ -46,6 +46,8 @@ type UI struct {
 	CP   pb.ControlPlaneClient
 	Head pb.MessageBoardClient
 	Tail pb.MessageBoardClient
+
+	cpAddrs *[]string
 }
 
 func getCPAddr(cpAddrs *[]string) string {
@@ -82,7 +84,7 @@ func Run(cpAddrs *[]string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 
-	headConn, tailConn := getHeadTailConn(cp, ctx, cancel)
+	headConn, tailConn := getHeadTailConn(&cp, ctx, cancel, cpAddrs)
 	headClient := pb.NewMessageBoardClient(headConn)
 	tailClient := pb.NewMessageBoardClient(tailConn)
 
@@ -127,13 +129,28 @@ func Run(cpAddrs *[]string) {
 	}
 }
 
-func getHeadTailConn(cp pb.ControlPlaneClient, ctx context.Context, cancel context.CancelFunc) (*grpc.ClientConn, *grpc.ClientConn) {
-	state, err := cp.GetClusterState(ctx, &emptypb.Empty{}) //head tail in chain
-	cancel()                                                //nismo dobili odgovora od control plane
-	if err != nil {
-		log.Fatal("failed to get cluster state:", err) //neki sfukan state na control plane
+func getHeadTailConn(cpref *pb.ControlPlaneClient, ctx context.Context, cancel context.CancelFunc, cpAddrs *[]string) (*grpc.ClientConn, *grpc.ClientConn) {
+	cp := *cpref
+	var state *pb.GetClusterStateResponse
+	for {
+		var err error
+		state, err = cp.GetClusterState(ctx, &emptypb.Empty{}) //head tail in chain
+		cancel()
+		if err == nil {
+			break
+		} else {
+			//log.Fatal("failed to get cluster state:", err) //neki sfukan state na control plane
+			var controlPlaneAddr string = getCPAddr(cpAddrs)
+			cpConn, err := grpc.NewClient(controlPlaneAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				log.Fatal("control-plane connection failed:", err)
+			}
+			defer cpConn.Close() //da zpre conection predn se konca na koncu bi pozabu drgace, zdej a je defer slabsi ku ce napisem na koncu upam da to compiler pole prov nrdi ka jaz necem razmisljat o tem
+			cp = pb.NewControlPlaneClient(cpConn)
+			cpref = &cp
+			continue
+		}
 	}
-
 	headAddr := state.GetHead().GetAddress() //kje je head
 	tailAddr := state.GetTail().GetAddress() //kje je tail
 	//////////////////////////////////// CONNECTION TO HEAD /////////////////////////////////////////////////////////////////
@@ -544,7 +561,7 @@ func (ui *UI) topics() {
 			if status.Code(err) == codes.Unavailable {
 				// če server ni dosegljiv
 				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(ui.CP, context.Background(), cancel) // zamenjaj context, za test context.Background()
+				headConn, tailConn := getHeadTailConn(&ui.CP, context.Background(), cancel, ui.cpAddrs) // zamenjaj context, za test context.Background()
 				ui.Head = pb.NewMessageBoardClient(headConn)
 				ui.Tail = pb.NewMessageBoardClient(tailConn)
 				ui.TopicsView.AddItem("Failed to load. Reconnected. Try again.", "", 0, nil)
@@ -591,7 +608,7 @@ func (ui *UI) showMessages(topicID int64, name string) {
 			if status.Code(err) == codes.Unavailable {
 				// če server ni dosegljiv
 				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(ui.CP, context.Background(), cancel)
+				headConn, tailConn := getHeadTailConn(&ui.CP, context.Background(), cancel, ui.cpAddrs)
 				ui.Head = pb.NewMessageBoardClient(headConn)
 				ui.Tail = pb.NewMessageBoardClient(tailConn)
 				ui.MessagesView.AddItem("[red]Failed to load. Reconnected. Try again.", "", 0, nil)
@@ -638,7 +655,7 @@ func (ui *UI) showUpdateDeleteMessages(topicID int64, name string) {
 			if status.Code(err) == codes.Unavailable {
 				// če server ni dosegljiv
 				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(ui.CP, context.Background(), cancel)
+				headConn, tailConn := getHeadTailConn(&ui.CP, context.Background(), cancel, ui.cpAddrs)
 				ui.Head = pb.NewMessageBoardClient(headConn)
 				ui.Tail = pb.NewMessageBoardClient(tailConn)
 				ui.MessagesUpdateDeleteView.AddItem("[red]Failed to load. Reconnected. Try again.", "", 0, nil)
@@ -682,7 +699,7 @@ func (ui *UI) subscription() {
 			if status.Code(err) == codes.Unavailable {
 				// če server ni dosegljiv
 				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(ui.CP, context.Background(), cancel) // zamenjaj context, za test context.Background()
+				headConn, tailConn := getHeadTailConn(&ui.CP, context.Background(), cancel, ui.cpAddrs) // zamenjaj context, za test context.Background()
 				ui.Head = pb.NewMessageBoardClient(headConn)
 				ui.Tail = pb.NewMessageBoardClient(tailConn)
 				ui.SubscriptionView.AddItem("Failed to load. Reconnected. Try again.", "", 0, nil)
@@ -738,7 +755,7 @@ func (ui *UI) loadSendMessageTopics() {
 		ui.App.QueueUpdateDraw(func() {
 			ui.SendMessageTopicsView.Clear()
 			if status.Code(err) == codes.Unavailable {
-				headConn, tailConn := getHeadTailConn(ui.CP, context.Background(), cancel)
+				headConn, tailConn := getHeadTailConn(&ui.CP, context.Background(), cancel, ui.cpAddrs)
 				ui.Head = pb.NewMessageBoardClient(headConn)
 				ui.Tail = pb.NewMessageBoardClient(tailConn)
 				ui.SendMessageTopicsView.AddItem("Failed to load. Reconnected. Try again.", "", 0, nil)
@@ -820,7 +837,7 @@ func (ui *UI) updateDeleteTopics() {
 			if status.Code(err) == codes.Unavailable {
 				// če server ni dosegljiv
 				// ponovno preveri head in tail
-				headConn, tailConn := getHeadTailConn(ui.CP, context.Background(), cancel) // zamenjaj context, za test context.Background()
+				headConn, tailConn := getHeadTailConn(&ui.CP, context.Background(), cancel, ui.cpAddrs) // zamenjaj context, za test context.Background()
 				ui.Head = pb.NewMessageBoardClient(headConn)
 				ui.Tail = pb.NewMessageBoardClient(tailConn)
 				ui.UpdateDeleteView.AddItem("Failed to load. Reconnected. Try again.", "", 0, nil)
