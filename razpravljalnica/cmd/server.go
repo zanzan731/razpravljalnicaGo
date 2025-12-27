@@ -16,7 +16,7 @@ var serverCmd = &cobra.Command{
 	Use:   "server",
 	Short: "Start message board node",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		server.Run(serverAddr, &cpAddrs)
+		server.Run(serverAddr, cpAddrs)
 		return nil
 	},
 }

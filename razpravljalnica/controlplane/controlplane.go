@@ -224,7 +224,7 @@ func (c *ControlPlaneServer) GetLeaderAddr(ctx context.Context, _ *emptypb.Empty
 	addr, _ := c.raft.LeaderWithID()
 	var saddr string = raftAddrToGrpcAddr(string(addr))
 	return &pb.LeaderAddressResponse{
-		LeaderAddr: string(saddr),
+		LeaderAddr: saddr,
 	}, nil
 }
 
