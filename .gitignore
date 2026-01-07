@@ -1,0 +1,17 @@
+# Raft state files
+raft-*-log.bolt
+raft-*-stable.bolt
+raft-*-log.bolt.lock
+raft-*-stable.bolt.lock
+# Snapshots
+snapshots-*/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

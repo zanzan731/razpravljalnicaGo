@@ -92,6 +92,9 @@ service  MessageBoard{
   // pošlje podatke nsalednjemu vozlišču
   rpc GetSyncStream(GetSyncStreamRequest) returns (stream SyncEvent);
 
+  // Vrne iz tail to head ack za dirty
+  rpc AckOperation(AckOperationRequest) returns (google.protobuf.Empty);
+
 }
 
 message CreateUserRequest {
@@ -180,6 +183,11 @@ message SyncEvent {
     Topic topic = 2;
     Message message = 3;
   }
+}
+
+message AckOperationRequest {
+  int64 operation_seq = 1; // sequence number of the operation being acknowledged
+  string operation_type = 2; // type of operation (CreateUser, PostMessage, etc.)
 }
 
 ////////////////////////////////////////////////////////////////////////////////

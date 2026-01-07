@@ -31,6 +31,7 @@ const (
 	MessageBoard_GetMessages_FullMethodName         = "/razpravljalnica.MessageBoard/GetMessages"
 	MessageBoard_SubscribeTopic_FullMethodName      = "/razpravljalnica.MessageBoard/SubscribeTopic"
 	MessageBoard_GetSyncStream_FullMethodName       = "/razpravljalnica.MessageBoard/GetSyncStream"
+	MessageBoard_AckOperation_FullMethodName        = "/razpravljalnica.MessageBoard/AckOperation"
 )
 
 // MessageBoardClient is the client API for MessageBoard service.
@@ -59,6 +60,8 @@ type MessageBoardClient interface {
 	SubscribeTopic(ctx context.Context, in *SubscribeTopicRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MessageEvent], error)
 	// pošlje podatke nsalednjemu vozlišču
 	GetSyncStream(ctx context.Context, in *GetSyncStreamRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SyncEvent], error)
+	// Vrne iz tail to head ack za dirty
+	AckOperation(ctx context.Context, in *AckOperationRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type messageBoardClient struct {
@@ -197,6 +200,16 @@ func (c *messageBoardClient) GetSyncStream(ctx context.Context, in *GetSyncStrea
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type MessageBoard_GetSyncStreamClient = grpc.ServerStreamingClient[SyncEvent]
 
+func (c *messageBoardClient) AckOperation(ctx context.Context, in *AckOperationRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, MessageBoard_AckOperation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MessageBoardServer is the server API for MessageBoard service.
 // All implementations must embed UnimplementedMessageBoardServer
 // for forward compatibility.
@@ -223,6 +236,8 @@ type MessageBoardServer interface {
 	SubscribeTopic(*SubscribeTopicRequest, grpc.ServerStreamingServer[MessageEvent]) error
 	// pošlje podatke nsalednjemu vozlišču
 	GetSyncStream(*GetSyncStreamRequest, grpc.ServerStreamingServer[SyncEvent]) error
+	// Vrne iz tail to head ack za dirty
+	AckOperation(context.Context, *AckOperationRequest) (*emptypb.Empty, error)
 	mustEmbedUnimplementedMessageBoardServer()
 }
 
@@ -265,6 +280,9 @@ func (UnimplementedMessageBoardServer) SubscribeTopic(*SubscribeTopicRequest, gr
 }
 func (UnimplementedMessageBoardServer) GetSyncStream(*GetSyncStreamRequest, grpc.ServerStreamingServer[SyncEvent]) error {
 	return status.Error(codes.Unimplemented, "method GetSyncStream not implemented")
+}
+func (UnimplementedMessageBoardServer) AckOperation(context.Context, *AckOperationRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method AckOperation not implemented")
 }
 func (UnimplementedMessageBoardServer) mustEmbedUnimplementedMessageBoardServer() {}
 func (UnimplementedMessageBoardServer) testEmbeddedByValue()                      {}
@@ -471,6 +489,24 @@ func _MessageBoard_GetSyncStream_Handler(srv interface{}, stream grpc.ServerStre
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type MessageBoard_GetSyncStreamServer = grpc.ServerStreamingServer[SyncEvent]
 
+func _MessageBoard_AckOperation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AckOperationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MessageBoardServer).AckOperation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MessageBoard_AckOperation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MessageBoardServer).AckOperation(ctx, req.(*AckOperationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // MessageBoard_ServiceDesc is the grpc.ServiceDesc for MessageBoard service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -513,6 +549,10 @@ var MessageBoard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetMessages",
 			Handler:    _MessageBoard_GetMessages_Handler,
+		},
+		{
+			MethodName: "AckOperation",
+			Handler:    _MessageBoard_AckOperation_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
