@@ -477,6 +477,13 @@ func (s *messageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessag
 	if !s.isAlreadyApplied(opSeq) {
 		message, err = s.applyPostMessage(req)
 		if err != nil {
+			//ce error ni nil brisi vn iz replikacije da ne v neskoncno repliciramo
+			if opSeq > 0 {
+				s.dirtyMu.Lock()
+				delete(s.dirtyOps, opSeq)
+				s.dirtyMu.Unlock()
+			}
+			log.Printf("Deleted dirty on (opSeq=%d, isInternal=%v) because of err: %v", opSeq, isInternalCall(ctx), err)
 			return nil, err
 		}
 		log.Printf("Applied PostMessage on %s: msg_id=%d, text=%s (opSeq=%d, isInternal=%v)",
@@ -578,6 +585,13 @@ func (s *messageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMe
 	if !s.isAlreadyApplied(opSeq) {
 		message, err = s.applyUpdateMessage(req)
 		if err != nil {
+			//ce error ni nil brisi vn iz replikacije da ne v neskoncno repliciramo
+			if opSeq > 0 {
+				s.dirtyMu.Lock()
+				delete(s.dirtyOps, opSeq)
+				s.dirtyMu.Unlock()
+			}
+			log.Printf("Deleted dirty on (opSeq=%d, isInternal=%v) because of err: %v", opSeq, isInternalCall(ctx), err)
 			return nil, err
 		}
 		log.Printf("Applied UpdateMessage on %s: msg_id=%d, text=%s (opSeq=%d, isInternal=%v)",
@@ -665,6 +679,13 @@ func (s *messageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMe
 
 	if !s.isAlreadyApplied(opSeq) {
 		if err := s.applyDeleteMessage(req); err != nil {
+			//ce error ni nil brisi vn iz replikacije da ne v neskoncno repliciramo
+			if opSeq > 0 {
+				s.dirtyMu.Lock()
+				delete(s.dirtyOps, opSeq)
+				s.dirtyMu.Unlock()
+			}
+			log.Printf("Deleted dirty on (opSeq=%d, isInternal=%v) because of err: %v", opSeq, isInternalCall(ctx), err)
 			return nil, err
 		}
 		log.Printf("Applied DeleteMessage on %s: msg_id=%d (opSeq=%d, isInternal=%v)",
@@ -752,6 +773,13 @@ func (s *messageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessag
 	if !s.isAlreadyApplied(opSeq) {
 		message, err = s.applyLikeMessage(req)
 		if err != nil {
+			//ce error ni nil brisi vn iz replikacije da ne v neskoncno repliciramo
+			if opSeq > 0 {
+				s.dirtyMu.Lock()
+				delete(s.dirtyOps, opSeq)
+				s.dirtyMu.Unlock()
+			}
+			log.Printf("Deleted dirty on (opSeq=%d, isInternal=%v) because of err: %v", opSeq, isInternalCall(ctx), err)
 			return nil, err
 		}
 		log.Printf("Applied LikeMessage on %s: msg_id=%d (opSeq=%d, isInternal=%v)",
