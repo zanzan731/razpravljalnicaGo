@@ -187,8 +187,6 @@ func Run(cpAddrs *[]string) {
 	defer cpConn.Close() //da zpre conection predn se konca na koncu bi pozabu drgace, zdej a je defer slabsi ku ce napisem na koncu upam da to compiler pole prov nrdi ka jaz necem razmisljat o tem
 	cp := pb.NewControlPlaneClient(cpConn)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-
 	headConn, tailConn, connErr := getHeadTailConn(cp)
 	if connErr != nil {
 		log.Fatal("failed to get cluster state:", connErr)
@@ -199,31 +197,98 @@ func Run(cpAddrs *[]string) {
 	app := tview.NewApplication()
 	// zacetek logina
 	var username string
-	input := tview.NewInputField().
-		SetLabel("Enter username:").
+	var password string
+	var user *pb.User
+
+	// kreiraj form
+	usernameInput := tview.NewInputField().
+		SetLabel("Username:").
 		SetFieldWidth(20)
+
+	passwordInput := tview.NewInputField().
+		SetLabel("Password:").
+		SetFieldWidth(20).
+		SetMaskCharacter('*') //kr nice
+
+	// displajcek mal ku un notification da ne ubijem ui in izpisujem pole na cmd sej umes pole ubijem ui za trenutek ma jebes se mi ne da spreminjat
+	errorText := tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignCenter)
+
 	form := tview.NewForm().
-		AddFormItem(input).
-		AddButton("OK", func() {
-			username = input.GetText()
+		AddFormItem(usernameInput).
+		AddFormItem(passwordInput).
+		AddButton("Login", func() {
+			errorText.SetText("")
+			username = strings.TrimSpace(usernameInput.GetText()) //v usernamu ne zelim presledkov i dont care pac pole mi bojo dali sam presledke ni sans
+			password = passwordInput.GetText()                    //tle bi tud lahk trimal sam pole bi lahk bil problem bi jim mogu vsaj rect
+
+			if username == "" || password == "" {
+				errorText.SetText("[red]Username and password cannot be empty")
+				return
+			}
+			if len(password) < 3 && len(password) < 20 {
+				errorText.SetText("[red]Password must be at least 3 characters and less than 20 carracters long")
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			user, err = headClient.LoginUser(ctx, &pb.LoginRequest{
+				Username: username,
+				Password: password,
+			})
+			cancel()
+			if err != nil {
+				//ben mu dajamo ful podatkov profesor za spletno se bi ze jokal ku je to slabo ma pac jebes
+				errorText.SetText(fmt.Sprintf("[red]Login failed: %v", err))
+				return
+			}
+			//tle mal breakam app za sekundo ce se kej zalomi in tko unlucky
+			app.Stop()
+		}).
+		AddButton("Register", func() {
+			errorText.SetText("")
+			username = strings.TrimSpace(usernameInput.GetText())
+			password = passwordInput.GetText()
+
+			if username == "" || password == "" {
+				errorText.SetText("[red]Username and password cannot be empty")
+				return
+			}
+			if len(password) < 3 && len(password) < 20 {
+				errorText.SetText("[red]Password must be at least 3 characters and less than 20 carracters long")
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			user, err = headClient.RegisterUser(ctx, &pb.RegisterRequest{
+				Username: username,
+				Password: password,
+			})
+			cancel()
+			if err != nil {
+				errorText.SetText(fmt.Sprintf("[red]Registration failed: %v", err))
+				return
+			}
 			app.Stop()
 		})
-	if err := app.SetRoot(form, true).EnableMouse(true).Run(); err != nil {
+
+	// Error na dnu in form zgori
+	loginLayout := tview.NewFlex().
+		SetDirection(tview.FlexRow).
+		AddItem(form, 0, 1, true).
+		AddItem(errorText, 1, 0, false)
+	//ta EnableMouse bi mogu tud spodi iskreno
+	if err := app.SetRoot(loginLayout, true).EnableMouse(true).Run(); err != nil {
 		panic(err)
 	}
-	username = strings.TrimSpace(username)
 
-	//Sm ponesreci prej dal pred enter username in mi je crashavalo in nism vedu zakaj lol :/
-	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
-	user, err := headClient.CreateUser(ctx, &pb.CreateUserRequest{Name: username})
-	cancel()
-	if err != nil {
-		//zpri vse prej
+	if user == nil {
 		headConn.Close()
 		if tailConn != nil && tailConn != headConn {
 			tailConn.Close()
 		}
-		log.Fatal("failed creating user:", err)
+		log.Fatal("failed to login or register")
 	}
 	fmt.Println("Logged in as user: ", user.Name, "ID: ", user.Id)
 
@@ -269,7 +334,8 @@ func getHeadTailConn(cp pb.ControlPlaneClient) (*grpc.ClientConn, *grpc.ClientCo
 func runShell(cp pb.ControlPlaneClient, cpConn *grpc.ClientConn, cpAddrs *[]string, head pb.MessageBoardClient, headConn *grpc.ClientConn, tail pb.MessageBoardClient, tailConn *grpc.ClientConn, userID int64) {
 	app := tview.NewApplication()
 	_ = NewUI(app, cp, cpConn, cpAddrs, head, headConn, tail, tailConn, userID)
-	if err := app.Run(); err != nil {
+	//dodal EnableMouse mislim da rabim sam tle upam
+	if err := app.EnableMouse(true).Run(); err != nil {
 		panic(err)
 	}
 }

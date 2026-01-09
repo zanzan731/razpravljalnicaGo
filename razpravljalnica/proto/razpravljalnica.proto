@@ -13,6 +13,7 @@ import "google/protobuf/timestamp.proto";
 message User {
   int64 id = 1;
   string name = 2;
+  string password = 3; // password hash (bcrypt)
 }
 
 message Topic {
@@ -57,6 +58,12 @@ message NodeInfo {
 service  MessageBoard{
   // Writes (only to head)
 
+  // registrira novega userja
+  rpc RegisterUser(RegisterRequest) returns (User);
+
+  // logina z username in password
+  rpc LoginUser(LoginRequest) returns (User);
+
   // Creates a new user and assigns it an id
   rpc CreateUser(CreateUserRequest) returns (User);
 
@@ -99,6 +106,16 @@ service  MessageBoard{
 
 message CreateUserRequest {
   string name = 1;
+}
+
+message RegisterRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
 }
 
 message CreateTopicRequest {

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/bcrypt" //isto ku na javascript obstaja bcrypt tko da bom realn zasifriru gesla ka poznam ze library
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -316,6 +317,140 @@ func (s *messageBoardServer) CreateUser(ctx context.Context, req *pb.CreateUserR
 	}
 
 	return user, nil
+}
+
+// dodaj username z passwordom in imenom (heshiraj password)
+func (s *messageBoardServer) applyRegisterUser(req *pb.RegisterRequest) (*pb.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check if user already exists
+	for _, u := range s.users {
+		if u.Name == req.GetUsername() {
+			return nil, fmt.Errorf("username already exists")
+		}
+	}
+
+	// Hash the password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.GetPassword()), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	// Create new user
+	s.nextUserID++
+	user := &pb.User{
+		Id:       s.nextUserID,
+		Name:     req.GetUsername(),
+		Password: string(hashedPassword),
+	}
+	s.users[user.Id] = user
+	return user, nil
+}
+
+// registriraj ga
+func (s *messageBoardServer) RegisterUser(ctx context.Context, req *pb.RegisterRequest) (*pb.User, error) {
+	// Check if external client call (not internal replication)
+	if !isInternalCall(ctx) {
+		s.mu.RLock()
+		isHead := s.isHead
+		s.mu.RUnlock()
+		if !isHead {
+			return nil, fmt.Errorf("write operation must be sent to head node")
+		}
+	}
+
+	// chekeraj ce je external client in ne internal replication
+	var opSeq int64
+	if !isInternalCall(ctx) {
+		opSeq = s.markDirty("RegisterUser", req)
+	} else {
+		opSeq = getOperationSeq(ctx)
+	}
+
+	var user *pb.User
+	var err error
+
+	if !s.isAlreadyApplied(opSeq) {
+		user, err = s.applyRegisterUser(req)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("Applied RegisterUser on %s: user_id=%d, username=%s (opSeq=%d)",
+			s.nodeInfo.GetAddress(), user.Id, user.Name, opSeq)
+		s.markApplied(opSeq)
+	} else {
+		// user je ze registriran
+		s.mu.RLock()
+		for _, u := range s.users {
+			if u.Name == req.GetUsername() {
+				user = u
+				break
+			}
+		}
+		s.mu.RUnlock()
+		if user == nil {
+			return nil, fmt.Errorf("user registration failed")
+		}
+	}
+
+	// replikacija
+	s.mu.RLock()
+	isTail := s.isTail
+	s.mu.RUnlock()
+
+	if !isTail {
+		if err := s.replicate(opSeq, func(ctx2 context.Context) error {
+			_, err := s.nextClient.RegisterUser(ctx2, req)
+			return err
+		}); err != nil {
+			log.Printf("Replication failed: %v (will retry when topology stabilizes)", err)
+		}
+	}
+
+	// ack iz taila
+	if isTail && isInternalCall(ctx) && opSeq > 0 {
+		go s.sendAckToPrev(opSeq, "RegisterUser")
+	}
+	// ce je head in tail sam zbrisi dirty da ne konstantn posilja in isce
+	if !isInternalCall(ctx) && isTail && opSeq > 0 {
+		s.dirtyMu.Lock()
+		delete(s.dirtyOps, opSeq)
+		s.dirtyMu.Unlock()
+	}
+
+	return user, nil
+}
+
+// login
+func (s *messageBoardServer) LoginUser(ctx context.Context, req *pb.LoginRequest) (*pb.User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Find user by username
+	var user *pb.User
+	for _, u := range s.users {
+		if u.Name == req.GetUsername() {
+			user = u
+			break
+		}
+	}
+
+	if user == nil {
+		return nil, fmt.Errorf("invalid username or password")
+	}
+
+	// bycript preveri
+	err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.GetPassword()))
+	if err != nil {
+		return nil, fmt.Errorf("invalid username or password")
+	}
+
+	// vrni userja brez passworda
+	return &pb.User{
+		Id:   user.Id,
+		Name: user.Name,
+	}, nil
 }
 
 // ista fora ku za userja i guess bom sam to delu ka idk ku drgace ka rabim spremljat ce pisem na pravo mesto ma pole bi rabu dat v message ce je blo ze cekirano na headu ka ku naj vem al je ta req prsu od clienta al serverja pac ja bullshit ma ajde
@@ -1143,6 +1278,10 @@ func (s *messageBoardServer) reReplicateDirtyOps() {
 		case "CreateUser":
 			req := op.Data.(*pb.CreateUserRequest)
 			_, err = s.nextClient.CreateUser(ctx, req)
+		//zakaj ni delalo i am asking myself zakaj se ne replicira fuck my life pac
+		case "RegisterUser":
+			req := op.Data.(*pb.RegisterRequest)
+			_, err = s.nextClient.RegisterUser(ctx, req)
 		case "CreateTopic":
 			req := op.Data.(*pb.CreateTopicRequest)
 			_, err = s.nextClient.CreateTopic(ctx, req)

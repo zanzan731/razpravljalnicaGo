@@ -20,6 +20,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	MessageBoard_RegisterUser_FullMethodName        = "/razpravljalnica.MessageBoard/RegisterUser"
+	MessageBoard_LoginUser_FullMethodName           = "/razpravljalnica.MessageBoard/LoginUser"
 	MessageBoard_CreateUser_FullMethodName          = "/razpravljalnica.MessageBoard/CreateUser"
 	MessageBoard_CreateTopic_FullMethodName         = "/razpravljalnica.MessageBoard/CreateTopic"
 	MessageBoard_PostMessage_FullMethodName         = "/razpravljalnica.MessageBoard/PostMessage"
@@ -38,6 +40,10 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type MessageBoardClient interface {
+	// registrira novega userja
+	RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*User, error)
+	// logina z username in password
+	LoginUser(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*User, error)
 	// Creates a new user and assigns it an id
 	CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpc.CallOption) (*User, error)
 	// Creates a new topic to which users can post messages
@@ -70,6 +76,26 @@ type messageBoardClient struct {
 
 func NewMessageBoardClient(cc grpc.ClientConnInterface) MessageBoardClient {
 	return &messageBoardClient{cc}
+}
+
+func (c *messageBoardClient) RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*User, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(User)
+	err := c.cc.Invoke(ctx, MessageBoard_RegisterUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *messageBoardClient) LoginUser(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*User, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(User)
+	err := c.cc.Invoke(ctx, MessageBoard_LoginUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *messageBoardClient) CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpc.CallOption) (*User, error) {
@@ -214,6 +240,10 @@ func (c *messageBoardClient) AckOperation(ctx context.Context, in *AckOperationR
 // All implementations must embed UnimplementedMessageBoardServer
 // for forward compatibility.
 type MessageBoardServer interface {
+	// registrira novega userja
+	RegisterUser(context.Context, *RegisterRequest) (*User, error)
+	// logina z username in password
+	LoginUser(context.Context, *LoginRequest) (*User, error)
 	// Creates a new user and assigns it an id
 	CreateUser(context.Context, *CreateUserRequest) (*User, error)
 	// Creates a new topic to which users can post messages
@@ -248,6 +278,12 @@ type MessageBoardServer interface {
 // pointer dereference when methods are called.
 type UnimplementedMessageBoardServer struct{}
 
+func (UnimplementedMessageBoardServer) RegisterUser(context.Context, *RegisterRequest) (*User, error) {
+	return nil, status.Error(codes.Unimplemented, "method RegisterUser not implemented")
+}
+func (UnimplementedMessageBoardServer) LoginUser(context.Context, *LoginRequest) (*User, error) {
+	return nil, status.Error(codes.Unimplemented, "method LoginUser not implemented")
+}
 func (UnimplementedMessageBoardServer) CreateUser(context.Context, *CreateUserRequest) (*User, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateUser not implemented")
 }
@@ -303,6 +339,42 @@ func RegisterMessageBoardServer(s grpc.ServiceRegistrar, srv MessageBoardServer)
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&MessageBoard_ServiceDesc, srv)
+}
+
+func _MessageBoard_RegisterUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MessageBoardServer).RegisterUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MessageBoard_RegisterUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MessageBoardServer).RegisterUser(ctx, req.(*RegisterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _MessageBoard_LoginUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LoginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MessageBoardServer).LoginUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MessageBoard_LoginUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MessageBoardServer).LoginUser(ctx, req.(*LoginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _MessageBoard_CreateUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -514,6 +586,14 @@ var MessageBoard_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "razpravljalnica.MessageBoard",
 	HandlerType: (*MessageBoardServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "RegisterUser",
+			Handler:    _MessageBoard_RegisterUser_Handler,
+		},
+		{
+			MethodName: "LoginUser",
+			Handler:    _MessageBoard_LoginUser_Handler,
+		},
 		{
 			MethodName: "CreateUser",
 			Handler:    _MessageBoard_CreateUser_Handler,
