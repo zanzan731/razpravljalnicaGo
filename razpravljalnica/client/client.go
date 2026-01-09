@@ -227,8 +227,8 @@ func Run(cpAddrs *[]string) {
 				errorText.SetText("[red]Username and password cannot be empty")
 				return
 			}
-			if len(password) < 3 && len(password) < 20 {
-				errorText.SetText("[red]Password must be at least 3 characters and less than 20 carracters long")
+			if len(password) < 3 || len(password) >= 20 {
+				errorText.SetText("[red]Password must be at least 3 characters and less than 20 characters long")
 				return
 			}
 
@@ -255,8 +255,8 @@ func Run(cpAddrs *[]string) {
 				errorText.SetText("[red]Username and password cannot be empty")
 				return
 			}
-			if len(password) < 3 && len(password) < 20 {
-				errorText.SetText("[red]Password must be at least 3 characters and less than 20 carracters long")
+			if len(password) < 3 || len(password) >= 20 {
+				errorText.SetText("[red]Password must be at least 3 characters and less than 20 characters long")
 				return
 			}
 
@@ -388,13 +388,6 @@ func (ui *UI) subscribeLoop(topicID int64, userID int64) {
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
-	}
-
-	if err != nil {
-		ui.App.QueueUpdateDraw(func() {
-			ui.NotificationBar.SetText("[red]Failed to get subscription node after retries")
-		})
-		return
 	}
 
 	if resp == nil || resp.GetNode() == nil {
