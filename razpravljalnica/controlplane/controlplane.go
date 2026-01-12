@@ -51,7 +51,7 @@ const (
 
 type RaftCommand struct {
 	Type CommandType
-	Node pb.NodeInfo
+	Node *pb.NodeInfo
 }
 
 const nodeTTL = 10 * time.Second
@@ -73,7 +73,10 @@ func (c *ControlPlaneServer) RegisterNode(ctx context.Context, node *pb.NodeInfo
 
 	cmd := RaftCommand{
 		Type: CmdRegisterNode,
-		Node: *node,
+		Node: &pb.NodeInfo{
+			Address: node.Address,
+			NodeId:  node.NodeId,
+		},
 	}
 
 	data, _ := json.Marshal(cmd)
@@ -140,7 +143,7 @@ func (c *ControlPlaneServer) Heartbeat(ctx context.Context, node *pb.NodeInfo) (
 
 	cmd := RaftCommand{
 		Type: CmdHeartbeat,
-		Node: pb.NodeInfo{
+		Node: &pb.NodeInfo{
 			NodeId:        node.NodeId,
 			LastHeartbeat: time.Now().UnixNano(),
 		},
@@ -167,7 +170,7 @@ func (c *ControlPlaneServer) startTTLLoop() {
 				if now-n.LastHeartbeat > int64(nodeTTL) {
 					cmd := RaftCommand{
 						Type: CmdRemoveNode,
-						Node: pb.NodeInfo{NodeId: n.NodeId},
+						Node: &pb.NodeInfo{NodeId: n.NodeId},
 					}
 					data, _ := json.Marshal(cmd)
 					c.raft.Apply(data, 5*time.Second)
@@ -248,7 +251,7 @@ func (f *ControlPlaneFSM) Apply(log *raft.Log) interface{} {
 		f.state.NextNodeId++
 		cmd.Node.NodeId = strconv.FormatInt(f.state.NextNodeId, 10)
 		cmd.Node.LastHeartbeat = time.Now().UnixNano()
-		f.state.Nodes = append(f.state.Nodes, &cmd.Node)
+		f.state.Nodes = append(f.state.Nodes, cmd.Node)
 		return cmd.Node.NodeId
 
 	case CmdHeartbeat:
