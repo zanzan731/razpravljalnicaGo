@@ -226,99 +226,6 @@ func (s *messageBoardServer) markApplied(opSeq int64) {
 	}
 }
 
-// za replikacijo user creata ka vedn gledas to na hedu da je res head in za pole notranjo replikacijo je to hitr fix ker pac me je metal vn pole za popravt
-func (s *messageBoardServer) applyCreateUser(req *pb.CreateUserRequest) *pb.User {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.nextUserID++
-	user := &pb.User{
-		Id:   s.nextUserID,
-		Name: req.GetName(),
-	}
-	s.users[user.Id] = user
-	return user
-}
-
-// rpc CreateUser(CreateUserRequest) returns (User);
-func (s *messageBoardServer) CreateUser(ctx context.Context, req *pb.CreateUserRequest) (*pb.User, error) {
-	var opSeq int64
-	// Check if external client call (not internal replication)
-	if !isInternalCall(ctx) {
-		s.mu.RLock()
-		isHead := s.isHead
-		s.mu.RUnlock()
-		if !isHead {
-			return nil, fmt.Errorf("write operation must be sent to head node")
-		}
-		// Mark as dirty on head
-		opSeq = s.markDirty("CreateUser", req)
-	} else {
-		// Get operation sequence from metadata
-		opSeq = getOperationSeq(ctx)
-	}
-
-	if !s.isAlreadyApplied(opSeq) {
-		// Also check if user with this name already exists (content-based dedup)
-		s.mu.RLock()
-		var existingUser *pb.User
-		for _, u := range s.users {
-			if u.Name == req.GetName() {
-				existingUser = u
-				break
-			}
-		}
-		s.mu.RUnlock()
-
-		if existingUser == nil {
-			user := s.applyCreateUser(req)
-			log.Printf("Applied CreateUser on %s: user_id=%d, name=%s (opSeq=%d, isInternal=%v)",
-				s.nodeInfo.GetAddress(), user.Id, user.Name, opSeq, isInternalCall(ctx))
-			s.markApplied(opSeq)
-		}
-	} else {
-		log.Printf("CreateUser opSeq=%d already applied on %s, skipping", opSeq, s.nodeInfo.GetAddress())
-	}
-
-	// Find user to return
-	var user *pb.User
-	s.mu.RLock()
-	for _, u := range s.users {
-		if u.Name == req.GetName() {
-			user = u
-			break
-		}
-	}
-	s.mu.RUnlock()
-
-	// poslji naslednjiku (only if not tail)
-	s.mu.RLock()
-	isTail := s.isTail
-	s.mu.RUnlock()
-
-	if !isTail {
-		if err := s.replicate(opSeq, func(ctx2 context.Context) error {
-			_, err := s.nextClient.CreateUser(ctx2, req)
-			return err
-		}); err != nil {
-			log.Printf("Replication failed: %v (will retry when topology stabilizes)", err)
-		}
-	}
-
-	// ce smo na tailu vrni nazaj ACK
-	if isTail && isInternalCall(ctx) && opSeq > 0 {
-		go s.sendAckToPrev(opSeq, "CreateUser")
-	}
-	// If we're both head AND tail (single node), clear dirty immediately
-	if !isInternalCall(ctx) && isTail && opSeq > 0 {
-		s.dirtyMu.Lock()
-		delete(s.dirtyOps, opSeq)
-		s.dirtyMu.Unlock()
-	}
-
-	return user, nil
-}
-
 // dodaj username z passwordom in imenom (heshiraj password)
 func (s *messageBoardServer) applyRegisterUser(req *pb.RegisterRequest) (*pb.User, error) {
 	s.mu.Lock()
@@ -1275,9 +1182,12 @@ func (s *messageBoardServer) reReplicateDirtyOps() {
 		var err error
 		//za vsak opperation je treba na naslednjem clientu poklicat neko operacijo pole bi moglo delat naprej tko ku ce bit
 		switch op.OpType {
-		case "CreateUser":
-			req := op.Data.(*pb.CreateUserRequest)
-			_, err = s.nextClient.CreateUser(ctx, req)
+		//spremenil na RegisterUser in Login
+		/*
+			case "CreateUser":
+				req := op.Data.(*pb.CreateUserRequest)
+				_, err = s.nextClient.CreateUser(ctx, req)
+		*/
 		//zakaj ni delalo i am asking myself zakaj se ne replicira fuck my life pac
 		case "RegisterUser":
 			req := op.Data.(*pb.RegisterRequest)

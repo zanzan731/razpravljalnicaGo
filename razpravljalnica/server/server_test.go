@@ -21,10 +21,13 @@ func newTestServer() *messageBoardServer {
 		nextMsgID:   1,
 		isHead:      true, // za testing najlazje
 		isTail:      true, // za testing najlazje
+		dirtyOps:    make(map[int64]*dirtyOperation),
+		appliedOps:  make(map[int64]bool),
 	}
 }
 
-// simple za zacet testiri ce se user nrdi
+/*
+// simple za zacet testiri ce se user nrdi, changed by create and register
 func TestCreateUser(t *testing.T) {
 	s := newTestServer()
 	user, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "TestUser"})
@@ -55,23 +58,151 @@ func TestCreateUser(t *testing.T) {
 		t.Errorf("Stored user name mismatch: got '%s'", storedUser.Name)
 	}
 }
+*/
+// Nov RegisterUser
+func TestRegisterUser(t *testing.T) {
+	s := newTestServer()
+	user, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{
+		Username: "testuser",
+		Password: "password123",
+	})
 
-// fuzz to bo pomojem dalo kak error bomo vidl
-func FuzzCreateUser(f *testing.F) {
-	// Neki primerov za zacetk Chatko dal ideje
-	f.Add("Alice")
-	f.Add("Bob123")
-	f.Add("User_with_underscores")
-	f.Add("Very Long Username With Spaces couse why not")
-	f.Add("")
-	f.Add("愛") // unicode neki pac lahk provam ce gre skoz --love drgace po japonsko
+	if err != nil {
+		t.Fatalf("RegisterUser failed: %v", err)
+	}
 
-	f.Fuzz(func(t *testing.T, username string) {
+	if user.Name != "testuser" {
+		t.Errorf("Expected username 'testuser', got '%s'", user.Name)
+	}
+
+	if user.Id != 1 {
+		t.Errorf("Expected user ID 1, got %d", user.Id)
+	}
+
+	// Check that password is stored (hashed)
+	s.mu.RLock()
+	storedUser, exists := s.users[user.Id]
+	s.mu.RUnlock()
+
+	if !exists {
+		t.Error("User was not saved on server")
+	}
+
+	if storedUser.Password == "password123" {
+		t.Error("Password should be hashed, not stored as plaintext")
+	}
+}
+
+// Login
+func TestLoginUser(t *testing.T) {
+	s := newTestServer()
+	// registriraj
+	_, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{
+		Username: "logintest",
+		Password: "correctpass",
+	})
+	if err != nil {
+		t.Fatalf("RegisterUser failed: %v", err)
+	}
+
+	// Z pravimi podatki
+	user, err := s.LoginUser(context.Background(), &pb.LoginRequest{
+		Username: "logintest",
+		Password: "correctpass",
+	})
+
+	if err != nil {
+		t.Fatalf("LoginUser with correct credentials failed: %v", err)
+	}
+
+	if user.Name != "logintest" {
+		t.Errorf("Expected username 'logintest', got '%s'", user.Name)
+	}
+
+	// Check that password is NOT returned
+	if user.Password != "" {
+		t.Error("Password should not be returned on login")
+	}
+}
+
+// Login z napacnim passwordom
+func TestLoginUserInvalidPassword(t *testing.T) {
+	s := newTestServer()
+	// registriraj
+	_, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{
+		Username: "logintest",
+		Password: "correctpass",
+	})
+	if err != nil {
+		t.Fatalf("RegisterUser failed: %v", err)
+	}
+
+	// Try to login with wrong password
+	_, err = s.LoginUser(context.Background(), &pb.LoginRequest{
+		Username: "logintest",
+		Password: "wrongpass",
+	})
+
+	if err == nil {
+		t.Error("Expected error with wrong password, got nil")
+	}
+}
+
+// Neprav user
+func TestLoginUserNotFound(t *testing.T) {
+	s := newTestServer()
+	_, err := s.LoginUser(context.Background(), &pb.LoginRequest{
+		Username: "nonexistent",
+		Password: "password",
+	})
+
+	if err == nil {
+		t.Error("Expected error for nonexistent user, got nil")
+	}
+}
+
+// Isti username
+func TestRegisterUserDuplicate(t *testing.T) {
+	s := newTestServer()
+	_, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{
+		Username: "duplicate",
+		Password: "pass1",
+	})
+	if err != nil {
+		t.Fatalf("First RegisterUser failed: %v", err)
+	}
+
+	// Try to register again with same username
+	_, err = s.RegisterUser(context.Background(), &pb.RegisterRequest{
+		Username: "duplicate",
+		Password: "pass2",
+	})
+
+	if err == nil {
+		t.Error("Expected error when registering duplicate username, got nil")
+	}
+}
+
+// fuzz za RegisterUser z random usernames in passwords
+func FuzzRegisterUser(f *testing.F) {
+	// Neki primerov za zacetk
+	f.Add("Alice", "password123")
+	f.Add("Bob123", "secure_pass")
+	f.Add("User_with_underscores", "pass_123")
+	f.Add("Very Long Username With Spaces", "longpassword")
+	f.Add("", "password")
+	f.Add("愛", "日本語パス") // unicode test
+
+	f.Fuzz(func(t *testing.T, username, password string) {
 		s := newTestServer()
 
-		user, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: username})
+		// Register user
+		user, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{
+			Username: username,
+			Password: password,
+		})
 
-		// Ne sme crshnat tud ce je username invalid
+		// Ne sme crashat tud ce je username invalid
 		if err != nil {
 			// Ce ima error je okej, sam ne sme crashat
 			return
@@ -79,7 +210,7 @@ func FuzzCreateUser(f *testing.F) {
 
 		// Ce je success, checkiraj da so podatki smiselni
 		if user == nil {
-			t.Fatal("User was nil but no error yippie i guess")
+			t.Fatal("User was nil but no error")
 		}
 
 		if user.Name != username {
@@ -90,7 +221,7 @@ func FuzzCreateUser(f *testing.F) {
 			t.Errorf("Invalid user ID: %d", user.Id)
 		}
 
-		// Preveri da je shranjen
+		// Preveri da je shranjen in password je hashiran
 		s.mu.RLock()
 		storedUser, exists := s.users[user.Id]
 		s.mu.RUnlock()
@@ -101,6 +232,31 @@ func FuzzCreateUser(f *testing.F) {
 
 		if storedUser.Name != username {
 			t.Errorf("Stored username mismatch: expected '%s', got '%s'", username, storedUser.Name)
+		}
+
+		// Password should be hashed, not plaintext
+		if storedUser.Password == password {
+			t.Error("Password should be hashed, not stored as plaintext")
+		}
+
+		// Try to login with correct password
+		loginUser, err := s.LoginUser(context.Background(), &pb.LoginRequest{
+			Username: username,
+			Password: password,
+		})
+
+		if err != nil {
+			t.Errorf("Login failed with correct password: %v", err)
+			return
+		}
+
+		if loginUser.Name != username {
+			t.Errorf("Login returned wrong username: expected '%s', got '%s'", username, loginUser.Name)
+		}
+
+		// Password should not be returned on login
+		if loginUser.Password != "" {
+			t.Error("Password should not be returned on login")
 		}
 	})
 }
@@ -153,9 +309,9 @@ func TestPostMessage(t *testing.T) {
 	s := newTestServer()
 
 	// Nrdi userja in topic
-	user, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "zanzan"})
+	user, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{Username: "zanzan", Password: "pass123"})
 	if err != nil {
-		t.Fatalf("In TestPostMessage there was a problem with CreateUser for some fucking reason....????")
+		t.Fatalf("In TestPostMessage there was a problem with RegisterUser for some fucking reason....????")
 	}
 	topic, err := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "Test Topic"})
 	if err != nil {
@@ -194,7 +350,7 @@ func TestPostMessage(t *testing.T) {
 func TestGetMessages(t *testing.T) {
 	s := newTestServer()
 	// User in topic prvo
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "zanzan"})
+	user, _ := s.RegisterUser(context.Background(), &pb.RegisterRequest{Username: "zanzan", Password: "pass123"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "Test Topic"})
 	// pole message
 	messageTexts := []string{"Message 1", "Message 2", "Message 3"}
@@ -224,9 +380,9 @@ func TestGetMessages(t *testing.T) {
 func TestUpdateMessage(t *testing.T) {
 	s := newTestServer()
 	// Create user + topics + messages
-	user, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "zanzan"})
+	user, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{Username: "zanzan", Password: "pass123"})
 	if err != nil {
-		t.Fatalf("In TestUpdateMessage there was a problem with CreateUser for some fucking reason....????")
+		t.Fatalf("In TestUpdateMessage there was a problem with RegisterUser for some fucking reason....????")
 	}
 	topic, err := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "Test Topic"})
 	if err != nil {
@@ -271,9 +427,9 @@ func TestDeleteMessage(t *testing.T) {
 	s := newTestServer()
 
 	// user + topics + msg post
-	user, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "zanzan"})
+	user, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{Username: "zanzan", Password: "pass123"})
 	if err != nil {
-		t.Fatalf("In TestDeleteMessage there was a problem with CreateUser for some fucking reason....????")
+		t.Fatalf("In TestDeleteMessage there was a problem with RegisterUser for some fucking reason....????")
 	}
 	topic, err := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "Test Topic"})
 	if err != nil {
@@ -319,9 +475,9 @@ func TestDeleteMessage(t *testing.T) {
 func TestPostMessageInvalidTopic(t *testing.T) {
 	s := newTestServer()
 
-	user, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "zanzan"})
+	user, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{Username: "zanzan", Password: "pass123"})
 	if err != nil {
-		t.Fatalf("In TestPostMessageInvalidTopic there was a problem with CreateUser for some fucking reason....????")
+		t.Fatalf("In TestPostMessageInvalidTopic there was a problem with RegisterUser for some fucking reason....????")
 	}
 	// Provi postat v nek topic ki ne obstaja
 	_, err = s.PostMessage(context.Background(), &pb.PostMessageRequest{
@@ -339,13 +495,13 @@ func TestPostMessageInvalidTopic(t *testing.T) {
 func TestUpdateMessageUnauthorized(t *testing.T) {
 	s := newTestServer()
 	// Create two users
-	user1, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "zanzan"})
+	user1, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{Username: "zanzan", Password: "pass123"})
 	if err != nil {
-		t.Fatalf("In TestUpdateMessageUnauthorized there was a problem with CreateUser 1 for some fucking reason....????")
+		t.Fatalf("In TestUpdateMessageUnauthorized there was a problem with RegisterUser 1 for some fucking reason....????")
 	}
-	user2, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Bob"})
+	user2, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{Username: "Bob", Password: "pass456"})
 	if err != nil {
-		t.Fatalf("In TestUpdateMessageUnauthorized there was a problem with CreateUser 2 for some fucking reason chair and rope combo....????")
+		t.Fatalf("In TestUpdateMessageUnauthorized there was a problem with RegisterUser 2 for some fucking reason chair and rope combo....????")
 	}
 	topic, err := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "Test Topic"})
 	if err != nil {
@@ -376,13 +532,13 @@ func TestUpdateMessageUnauthorized(t *testing.T) {
 func TestDeleteMessageUnauthorized(t *testing.T) {
 	s := newTestServer()
 	// Create two users
-	user1, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "zanzan"})
+	user1, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{Username: "zanzan", Password: "pass123"})
 	if err != nil {
-		t.Fatalf("In TestUpdateMessageUnauthorized there was a problem with CreateUser 1 for some fucking reason....????")
+		t.Fatalf("In TestDeleteMessageUnauthorized there was a problem with RegisterUser 1 for some fucking reason....????")
 	}
-	user2, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Bob"})
+	user2, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{Username: "Bob", Password: "pass456"})
 	if err != nil {
-		t.Fatalf("In TestUpdateMessageUnauthorized there was a problem with CreateUser 2 for some fucking reason chair and rope combo....????")
+		t.Fatalf("In TestDeleteMessageUnauthorized there was a problem with RegisterUser 2 for some fucking reason chair and rope combo....????")
 	}
 	topic, err := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "Test Topic"})
 	if err != nil {
@@ -413,13 +569,13 @@ func TestDeleteMessageUnauthorized(t *testing.T) {
 func TestLikeMessage(t *testing.T) {
 	s := newTestServer()
 	// Create two users
-	user1, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "zanzan"})
+	user1, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{Username: "zanzan", Password: "pass123"})
 	if err != nil {
-		t.Fatalf("In TestLikeMessage there was a problem with CreateUser 1 for some fucking reason....????")
+		t.Fatalf("In TestLikeMessage there was a problem with RegisterUser 1 for some fucking reason....????")
 	}
-	user2, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Bob"})
+	user2, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{Username: "Bob", Password: "pass456"})
 	if err != nil {
-		t.Fatalf("In TestLikeMessage there was a problem with CreateUser 2 for some fucking reason chair and rope combo....????")
+		t.Fatalf("In TestLikeMessage there was a problem with RegisterUser 2 for some fucking reason chair and rope combo....????")
 	}
 	topic, err := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "Test Topic"})
 	if err != nil {
@@ -445,9 +601,9 @@ func TestLikeMessage(t *testing.T) {
 func TestLikeMessageUnauthorized(t *testing.T) {
 	s := newTestServer()
 	// Create two users
-	user, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "zanzan"})
+	user, err := s.RegisterUser(context.Background(), &pb.RegisterRequest{Username: "zanzan", Password: "pass123"})
 	if err != nil {
-		t.Fatalf("In TestLikeMessageUnauthorized there was a problem with CreateUser for some fucking reason....????")
+		t.Fatalf("In TestLikeMessageUnauthorized there was a problem with RegisterUser for some fucking reason....????")
 	}
 	topic, err := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "Test Topic"})
 	if err != nil {

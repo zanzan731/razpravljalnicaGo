@@ -142,7 +142,7 @@ go test
 
 Test with fuzzing (example with FuzzCreateUser):
 ```bash
-go test -fuzz=FuzzCreateUser -fuzztime=100s
+go test -fuzz=FuzzRegisterUser -fuzztime=100s
 ```
 
 ## Protocol Buffers
