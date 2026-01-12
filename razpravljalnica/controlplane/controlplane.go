@@ -222,6 +222,11 @@ func (c *ControlPlaneServer) JoinCluster(ctx context.Context, req *pb.JoinCluste
 
 func (c *ControlPlaneServer) GetLeaderAddr(ctx context.Context, _ *emptypb.Empty) (*pb.LeaderAddressResponse, error) {
 	addr, _ := c.raft.LeaderWithID()
+	if addr == "" {
+		return &pb.LeaderAddressResponse{
+			LeaderAddr: "",
+		}, nil
+	}
 	var saddr string = raftAddrToGrpcAddr(string(addr))
 	return &pb.LeaderAddressResponse{
 		LeaderAddr: saddr,
@@ -385,8 +390,19 @@ func JoinRaftCluster(initialGrpcAddr string, nodeID string, raftAddr string) err
 }
 
 func raftAddrToGrpcAddr(raftAddr string) string {
-	host, port, _ := net.SplitHostPort(raftAddr)
-	p, _ := strconv.Atoi(port)
+	if raftAddr == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(raftAddr)
+	if err != nil {
+		log.Printf("Error parsing raft address %s: %v", raftAddr, err)
+		return ""
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		log.Printf("Error parsing port %s: %v", port, err)
+		return ""
+	}
 	// za zdaj ja grpc address ravno raft address-1000 (bi blo fajn mal spremenit)
 	return fmt.Sprintf("%s:%d", host, p-1000)
 }
