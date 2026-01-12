@@ -1182,12 +1182,6 @@ func (s *messageBoardServer) reReplicateDirtyOps() {
 		var err error
 		//za vsak opperation je treba na naslednjem clientu poklicat neko operacijo pole bi moglo delat naprej tko ku ce bit
 		switch op.OpType {
-		//spremenil na RegisterUser in Login
-		/*
-			case "CreateUser":
-				req := op.Data.(*pb.CreateUserRequest)
-				_, err = s.nextClient.CreateUser(ctx, req)
-		*/
 		//zakaj ni delalo i am asking myself zakaj se ne replicira fuck my life pac
 		case "RegisterUser":
 			req := op.Data.(*pb.RegisterRequest)
