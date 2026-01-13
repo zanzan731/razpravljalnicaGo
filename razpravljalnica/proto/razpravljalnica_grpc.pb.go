@@ -22,7 +22,6 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	MessageBoard_RegisterUser_FullMethodName        = "/razpravljalnica.MessageBoard/RegisterUser"
 	MessageBoard_LoginUser_FullMethodName           = "/razpravljalnica.MessageBoard/LoginUser"
-	MessageBoard_CreateUser_FullMethodName          = "/razpravljalnica.MessageBoard/CreateUser"
 	MessageBoard_CreateTopic_FullMethodName         = "/razpravljalnica.MessageBoard/CreateTopic"
 	MessageBoard_PostMessage_FullMethodName         = "/razpravljalnica.MessageBoard/PostMessage"
 	MessageBoard_UpdateMessage_FullMethodName       = "/razpravljalnica.MessageBoard/UpdateMessage"
@@ -44,8 +43,6 @@ type MessageBoardClient interface {
 	RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*User, error)
 	// logina z username in password
 	LoginUser(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*User, error)
-	// Creates a new user and assigns it an id
-	CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpc.CallOption) (*User, error)
 	// Creates a new topic to which users can post messages
 	CreateTopic(ctx context.Context, in *CreateTopicRequest, opts ...grpc.CallOption) (*Topic, error)
 	// Post a message to a topic; Succed only if the User and the Topic exist in the data base.
@@ -92,16 +89,6 @@ func (c *messageBoardClient) LoginUser(ctx context.Context, in *LoginRequest, op
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(User)
 	err := c.cc.Invoke(ctx, MessageBoard_LoginUser_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *messageBoardClient) CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpc.CallOption) (*User, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(User)
-	err := c.cc.Invoke(ctx, MessageBoard_CreateUser_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -244,8 +231,6 @@ type MessageBoardServer interface {
 	RegisterUser(context.Context, *RegisterRequest) (*User, error)
 	// logina z username in password
 	LoginUser(context.Context, *LoginRequest) (*User, error)
-	// Creates a new user and assigns it an id
-	CreateUser(context.Context, *CreateUserRequest) (*User, error)
 	// Creates a new topic to which users can post messages
 	CreateTopic(context.Context, *CreateTopicRequest) (*Topic, error)
 	// Post a message to a topic; Succed only if the User and the Topic exist in the data base.
@@ -283,9 +268,6 @@ func (UnimplementedMessageBoardServer) RegisterUser(context.Context, *RegisterRe
 }
 func (UnimplementedMessageBoardServer) LoginUser(context.Context, *LoginRequest) (*User, error) {
 	return nil, status.Error(codes.Unimplemented, "method LoginUser not implemented")
-}
-func (UnimplementedMessageBoardServer) CreateUser(context.Context, *CreateUserRequest) (*User, error) {
-	return nil, status.Error(codes.Unimplemented, "method CreateUser not implemented")
 }
 func (UnimplementedMessageBoardServer) CreateTopic(context.Context, *CreateTopicRequest) (*Topic, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateTopic not implemented")
@@ -373,24 +355,6 @@ func _MessageBoard_LoginUser_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(MessageBoardServer).LoginUser(ctx, req.(*LoginRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _MessageBoard_CreateUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CreateUserRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(MessageBoardServer).CreateUser(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: MessageBoard_CreateUser_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(MessageBoardServer).CreateUser(ctx, req.(*CreateUserRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -593,10 +557,6 @@ var MessageBoard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "LoginUser",
 			Handler:    _MessageBoard_LoginUser_Handler,
-		},
-		{
-			MethodName: "CreateUser",
-			Handler:    _MessageBoard_CreateUser_Handler,
 		},
 		{
 			MethodName: "CreateTopic",

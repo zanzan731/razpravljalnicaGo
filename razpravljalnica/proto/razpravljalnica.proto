@@ -64,9 +64,6 @@ service  MessageBoard{
   // logina z username in password
   rpc LoginUser(LoginRequest) returns (User);
 
-  // Creates a new user and assigns it an id
-  rpc CreateUser(CreateUserRequest) returns (User);
-
   // Creates a new topic to which users can post messages
   rpc CreateTopic(CreateTopicRequest) returns (Topic);
 
@@ -102,10 +99,6 @@ service  MessageBoard{
   // Vrne iz tail to head ack za dirty
   rpc AckOperation(AckOperationRequest) returns (google.protobuf.Empty);
 
-}
-
-message CreateUserRequest {
-  string name = 1;
 }
 
 message RegisterRequest {
