@@ -524,6 +524,7 @@ func NewUI(app *tview.Application, cp pb.ControlPlaneClient, cpConn *grpc.Client
 	ui.buildMessageEditForm()
 	ui.buildUpdateDeleteTopics()
 	ui.buildMessagesUpdateDeletePage()
+	ui.refreshClusterCache() // Initialize cluster cache on startup
 	ui.topics()
 	ui.subscription()
 
